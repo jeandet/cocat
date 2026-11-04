@@ -48,13 +48,20 @@ async def require_role(
     return role
 
 
+def _room_name(name: str) -> str:
+    stripped = name.strip()
+    if not stripped:
+        raise RoomError("Enter a room name")
+    return stripped
+
+
 async def create_room(
     session: AsyncSession, owner: User, name: str, room_id: str | None = None
 ) -> Room:
     room_id = validate_room_id(room_id) if room_id is not None else uuid4().hex
     if await session.get(Room, room_id) is not None:
         raise Conflict(f"Room {room_id} already exists")
-    room = Room(id=room_id, name=name, created_by=owner.id)
+    room = Room(id=room_id, name=_room_name(name), created_by=owner.id)
     session.add(room)
     await _add_member(session, room_id, owner.id, Role.owner)
     await session.commit()
@@ -101,6 +108,7 @@ async def rename_room(
     session: AsyncSession, room_id: str, actor: User, name: str
 ) -> Room:
     await require_role(session, room_id, actor, Role.owner)
+    name = _room_name(name)
     room = await session.get_one(Room, room_id)
     room.name = name
     await session.commit()

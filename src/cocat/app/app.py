@@ -20,9 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from wire_file import AsyncFileClient
 from wiredb import AsyncChannel, Room, RoomManager
 
+from ..ui import mount_ui
+from ..ui.context import UIContext
+from .actions import RoomActions
 from .connections import Connections
 from .db import DB, User, get_db
 from .db import Room as RoomModel
+from .prefix import PrefixPath
 from .ratelimit import RateLimiter, limit, load_trusted_proxies
 from .rooms import RoomError, list_members, list_user_rooms
 from .routes import make_api_router, room_error_handler
@@ -183,6 +187,20 @@ class CocatApp:  # pragma: nocover
         ):
             members = await list_members(session, room_id, user)
             return {"users": [member.email for member, _ in members]}
+
+        mount_ui(
+            app,
+            UIContext(
+                db=db,
+                backend=backend,
+                actions=RoomActions(self.connections, update_dir),
+                check_limit=check_limit,
+            ),
+        )
+
+        # `add_middleware` prepends, so the last call is outermost and rewrites
+        # the path before routing.
+        app.add_middleware(PrefixPath, prefix=root_path)
 
 
 class YWebSocket(AsyncChannel):  # pragma: nocover

@@ -1,16 +1,26 @@
 import os
 import signal
 import subprocess
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from uuid import uuid4
 
 import anyio
+import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from nicegui.testing.user import User as SimulatedUser
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
-from utils import create_room, create_user, wait_for_server
+from utils import (
+    clean_nicegui,
+    create_room,
+    create_user,
+    log_in,
+    ui_simulation,
+    wait_for_server,
+)
 
 from cocat.app.app import CocatApp
 from cocat.app.db import User, get_db
@@ -55,10 +65,30 @@ class AppClient:
 
 @pytest.fixture()
 def app_client(update_dir: str, db_path: str) -> Iterator[AppClient]:
-    with TestClient(
-        CocatApp(update_dir, db_path).app, base_url="https://testserver"
-    ) as client:
-        yield AppClient(client=client, db_path=db_path, update_dir=update_dir)
+    with clean_nicegui():
+        app = CocatApp(update_dir, db_path).app
+        with TestClient(app, base_url="https://testserver") as client:
+            yield AppClient(client=client, db_path=db_path, update_dir=update_dir)
+
+
+@dataclass
+class UI:
+    user: SimulatedUser
+    app: FastAPI
+    db_path: str
+    update_dir: str
+    email: str = "ui@test.org"
+    password: str = "pwd"
+
+    async def log_in(self) -> httpx.Response:
+        return await log_in(self.user, self.email, self.password)
+
+
+@pytest.fixture()
+async def ui(update_dir: str, db_path: str) -> AsyncIterator[UI]:
+    await _create_user(UI.email, UI.password, False, db_path)
+    async with ui_simulation(lambda: CocatApp(update_dir, db_path).app) as (app, user):
+        yield UI(user=user, app=app, db_path=db_path, update_dir=update_dir)
 
 
 def make_user(db_path: str, email: str, password: str = "pwd") -> None:

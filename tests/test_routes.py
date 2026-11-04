@@ -160,6 +160,15 @@ def test_errors_map_to_status(app_client):
     assert leaving.status_code == 409
 
 
+def test_blank_room_name_is_a_bad_request(app_client):
+    make_user(app_client.db_path, "owner@x.org")
+    login(app_client.client, "owner@x.org")
+
+    response = app_client.client.post("/api/rooms", json={"name": "   "})
+
+    assert response.status_code == 400
+
+
 def test_viewer_role_not_assignable_yet(app_client):
     make_user(app_client.db_path, "owner@x.org")
     make_user(app_client.db_path, "editor@x.org")

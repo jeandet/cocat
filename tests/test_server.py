@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+import requests
 from anyio import fail_after, sleep
 from utils import add_user_to_room, create_user, wait_for_server
 from wire_file import AsyncFileClient
@@ -192,6 +193,20 @@ def test_room_users_requires_room_member(server, user, room_id, db_path):
 
     member_cookies = login(host, port, *user)
     assert httpx.get(url, cookies=member_cookies).json() == {"users": [user[0]]}
+
+
+def test_ui_served_by_anycorn(server):
+    host, port = server
+
+    page = requests.get(f"http://{host}:{port}/ui/login")
+    assert page.status_code == 200
+    assert page.headers["x-nicegui-content"] == "page"
+
+    handshake = requests.get(
+        f"http://{host}:{port}/ui/_nicegui_ws/socket.io/?EIO=4&transport=polling"
+    )
+    assert handshake.status_code == 200
+    assert handshake.text.startswith("0{")
 
 
 def test_wait_for_server_raises_when_process_exited():

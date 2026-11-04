@@ -8,6 +8,7 @@ from cocat.app.rooms import (
     Conflict,
     Forbidden,
     NotFound,
+    RoomError,
     add_member,
     create_personal_room,
     create_room,
@@ -78,6 +79,22 @@ async def test_create_room_conflict(session, owner):
 async def test_create_room_validates_explicit_id(session, owner):
     with pytest.raises(ValueError):
         await create_room(session, owner, "Lab", room_id="../x")
+
+
+async def test_blank_room_name_is_refused(session, owner):
+    with pytest.raises(RoomError, match="Enter a room name"):
+        await create_room(session, owner, "   ")
+
+    room = await create_room(session, owner, "Lab")
+    with pytest.raises(RoomError, match="Enter a room name"):
+        await rename_room(session, room.id, owner, " ")
+    assert room.name == "Lab"
+
+
+async def test_room_name_is_stripped(session, owner):
+    room = await create_room(session, owner, "  Lab  ")
+
+    assert room.name == "Lab"
 
 
 async def test_get_role(session, owner, stranger):

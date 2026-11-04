@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .actions import RoomActions
 from .connections import Connections
 from .db import DB, Role, User
 from .invitations import (
@@ -20,10 +21,8 @@ from .rooms import (
     NotFound,
     RoomError,
     create_room,
-    delete_room,
     list_members,
     list_user_rooms,
-    remove_member,
     rename_room,
     set_member_role,
     transfer_ownership,
@@ -42,10 +41,10 @@ from .schemas import (
     RoomRename,
     UserRead,
 )
-from .storage import remove_room_file
 from .users import Backend
 
 ERROR_STATUS: dict[type[RoomError], int] = {
+    RoomError: status.HTTP_400_BAD_REQUEST,
     NotFound: status.HTTP_404_NOT_FOUND,
     Forbidden: status.HTTP_403_FORBIDDEN,
     Conflict: status.HTTP_409_CONFLICT,
@@ -55,7 +54,8 @@ ERROR_STATUS: dict[type[RoomError], int] = {
 def room_error_handler(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RoomError)
     return JSONResponse(
-        status_code=ERROR_STATUS[type(exc)], content={"detail": str(exc)}
+        status_code=ERROR_STATUS.get(type(exc), status.HTTP_400_BAD_REQUEST),
+        content={"detail": str(exc)},
     )
 
 
@@ -66,6 +66,7 @@ def make_api_router(
     update_dir: str,
 ) -> APIRouter:
     router = APIRouter()
+    actions = RoomActions(connections, update_dir)
     current_user = Depends(backend.current_active_user)
     session_dependency = Depends(db.get_async_session)
 
@@ -107,9 +108,7 @@ def make_api_router(
         user: User = current_user,
         session: AsyncSession = session_dependency,
     ) -> None:
-        await delete_room(session, room_id, user)
-        await connections.close(room_id)
-        remove_room_file(update_dir, room_id)
+        await actions.delete_room(session, room_id, user)
 
     @router.get("/rooms/{room_id}/members", response_model=list[MemberOut])
     async def get_members(
@@ -145,8 +144,7 @@ def make_api_router(
         user: User = current_user,
         session: AsyncSession = session_dependency,
     ) -> None:
-        await remove_member(session, room_id, user, user_id)
-        await connections.close(room_id, user_id)
+        await actions.remove_member(session, room_id, user, user_id)
 
     @router.post("/rooms/{room_id}/owner", status_code=status.HTTP_204_NO_CONTENT)
     async def post_owner(

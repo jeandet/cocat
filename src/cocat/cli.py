@@ -157,6 +157,7 @@ async def _serve(
     shutdown_event = Event()
     tb = None
     cocat_app = CocatApp(update_dir, db_path)
+    print(f"Web UI at http://{host}:{port}/ui/")
     async with create_task_group() as tg:
         try:
             task = create_task(
