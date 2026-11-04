@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 import sys
@@ -12,6 +13,10 @@ from fastapi import FastAPI
 from nicegui import core
 from nicegui.testing.general import nicegui_reset_globals
 from nicegui.testing.user import User
+from sqlalchemy import select
+
+from cocat.app.db import User as OrmUser
+from cocat.app.db import get_db
 
 COOKIE_NAME = "fastapiusersauth"
 
@@ -136,6 +141,39 @@ async def log_in(
     assert response.status_code == 303
     assert COOKIE_NAME in response.cookies
     return response
+
+
+def click(user: User, marker: str) -> None:
+    """Click the element carrying `marker`, without waiting for the handler.
+
+    Handlers run as separate tasks, so assertions after a click go through
+    `should_see` or `should_notify`, which retry.
+    """
+    user.find(marker=marker).click()
+
+
+def fill(user: User, marker: str, text: str) -> None:
+    user.find(marker=marker).clear().type(text)
+
+
+async def should_notify(user: User, message: str, timeout: float = 1.0) -> None:
+    """Wait for a notification instead of sleeping a fixed time."""
+    deadline = time.monotonic() + timeout
+    while message not in user.notify.messages:
+        assert time.monotonic() < deadline, f"no {message!r} in {user.notify.messages}"
+        await asyncio.sleep(0.01)
+
+
+async def set_active(db_path: str, email: str, active: bool) -> None:
+    db = get_db(db_path)
+    try:
+        async with db.async_session_maker() as session:
+            user = await session.scalar(select(OrmUser).filter_by(email=email))
+            assert user is not None
+            user.is_active = active
+            await session.commit()
+    finally:
+        await db.engine.dispose()
 
 
 def get_credential(service_name: str, username: str | None) -> Credentials | None:

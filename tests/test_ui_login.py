@@ -3,10 +3,8 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 from conftest import UI
-from sqlalchemy import select
-from utils import COOKIE_NAME
+from utils import COOKIE_NAME, set_active
 
-from cocat.app.db import User, get_db
 from cocat.ui.auth import login_form, logout_form
 
 pytestmark = pytest.mark.anyio
@@ -16,18 +14,6 @@ pytestmark = pytest.mark.anyio
 def anyio_backend() -> str:
     # aiosqlite only runs on asyncio
     return "asyncio"
-
-
-async def set_active(db_path: str, email: str, active: bool) -> None:
-    db = get_db(db_path)
-    try:
-        async with db.async_session_maker() as session:
-            user = await session.scalar(select(User).filter_by(email=email))
-            assert user is not None
-            user.is_active = active
-            await session.commit()
-    finally:
-        await db.engine.dispose()
 
 
 async def post_login(
