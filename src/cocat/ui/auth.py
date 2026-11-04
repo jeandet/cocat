@@ -4,7 +4,9 @@ from urllib.parse import urlencode, urlsplit
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..app.db import User
 from .context import UIContext
 from .layout import ui_url
 
@@ -72,6 +74,21 @@ def with_cookies(response: Response, source: Response) -> Response:
     return response
 
 
+async def authenticate(
+    ctx: UIContext, session: AsyncSession, email: str, password: str
+) -> User | None:
+    """The account an email and password belong to, if it may sign in.
+
+    `authenticate` hashes the password even for an unknown email, so a refusal
+    costs as much as a success and cannot be used to probe for accounts.
+    """
+    credentials = OAuth2PasswordRequestForm(
+        grant_type="password", username=email, password=password
+    )
+    user = await ctx.backend.user_manager(session).authenticate(credentials)
+    return user if user is not None and user.is_active else None
+
+
 def make_auth_router(ctx: UIContext) -> APIRouter:
     """Log in and out, as plain routes rather than pages.
 
@@ -93,14 +110,14 @@ def make_auth_router(ctx: UIContext) -> APIRouter:
             return redirect(ui_url(request, "/login") + "?error=too_many")
 
         form = await request.form()
-        credentials = OAuth2PasswordRequestForm(
-            grant_type="password",
-            username=str(form.get("username", "")),
-            password=str(form.get("password", "")),
-        )
         async with ctx.db.async_session_maker() as session:
-            user = await ctx.backend.user_manager(session).authenticate(credentials)
-            if user is None or not user.is_active:
+            user = await authenticate(
+                ctx,
+                session,
+                str(form.get("username", "")),
+                str(form.get("password", "")),
+            )
+            if user is None:
                 return redirect(ui_url(request, "/login") + "?error=credentials")
             token = await ctx.backend.get_jwt_strategy().write_token(user)
 

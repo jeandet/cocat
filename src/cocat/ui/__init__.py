@@ -17,6 +17,7 @@ def mount_ui(app: FastAPI, ctx: UIContext) -> None:
 
 
 def register_pages(ctx: UIContext) -> None:
+    from .account import register as register_account
     from .invitation import register as register_invitation
     from .login import register as register_login
     from .room import register as register_room
@@ -26,3 +27,4 @@ def register_pages(ctx: UIContext) -> None:
     register_rooms(ctx)
     register_room(ctx)
     register_invitation(ctx)
+    register_account(ctx)

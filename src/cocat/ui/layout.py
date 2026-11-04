@@ -79,6 +79,7 @@ def page_header(request: Request, user: User) -> None:
     with ui.header().classes("items-center gap-4"):
         ui.label("cocat").classes("text-lg font-bold")
         ui.link("My rooms", ui_url(request, "/rooms")).mark("nav-rooms")
+        ui.link("Account", ui_url(request, "/account")).mark("nav-account")
         ui.label(user.email)
         ui.html(logout_form(ui_url(request, "/logout"))).mark("logout")
 
