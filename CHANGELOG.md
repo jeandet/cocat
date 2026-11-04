@@ -1,5 +1,20 @@
 # Version history
 
+## 0.13.0
+
+- Serve a web UI at `/ui/` from `cocat serve`, in the same process as the API and with
+  the same login cookie: my rooms, a page per room with its members and invitations, an
+  invitation acceptance page and an account page to change your password.
+- Pages call the same Python services as the REST API, so the two front ends cannot
+  drift apart; room deletion and member removal go through one `RoomActions` object that
+  also closes websockets and removes the room file.
+- Leave the owner in charge of invitations: the room page creates share links and
+  revokes invitations.
+- Serve the UI behind a reverse proxy that strips its prefix, and add
+  `COCAT_PUBLIC_URL` for the origin of share links.
+- Add `nicegui` to the `server` extra.
+- Refuse blank room names in the services, not only in the API.
+
 ## 0.12.0
 
 - Back up `users.db` before upgrading.

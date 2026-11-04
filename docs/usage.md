@@ -148,13 +148,39 @@ directory, with one file per room: the room ID is the last component of the webs
 path, so a client connecting to `ws://127.0.0.1:8000/room/lab` uses room `lab` and the
 file `update_dir/lab.y`.
 
-Three environment variables change how the server behaves:
+Four environment variables change how the server behaves:
 
 | Variable | Effect |
 |---|---|
 | `COCAT_PROXY_PREFIX` | path prefix the server is served under when a reverse proxy rewrites the URL (default: none) |
+| `COCAT_PUBLIC_URL` | origin used in the share links the web UI hands out (default: the host of the request) |
 | `COCAT_TRUSTED_PROXIES` | number of reverse proxies in front of the server (default `0`) |
 | `COCAT_SECRET` | JWT signing secret, overriding the one stored in the `<db-path>.secret` file |
+
+### Web UI
+
+The same command serves a web interface at `http://127.0.0.1:8000/ui/`: same process,
+same port, same `fastapiusersauth` cookie as the API, so a browser session works for
+both. Sign in with an account an administrator created with `cocat create-user`; there
+is no sign-up page, and no password reset page either.
+
+| Page | What it does |
+|---|---|
+| `/ui/rooms` | your rooms, create one, rename or delete the ones you own, leave the others |
+| `/ui/rooms/{room_id}` | members and their roles, transfer the ownership, remove a member, pending invitations, create and revoke share links |
+| `/ui/invitation` | who invites you to which room, and the button that joins it |
+| `/ui/account` | change your password |
+
+Until roles are enforced, the UI only hands out the `editor` role: an invitation joins
+you as an editor, and there is no role picker.
+
+A share link looks like `http://127.0.0.1:8000/ui/invitation#<token>`: the token is in the
+URL fragment, which the browser keeps to itself, so it never reaches a server log. The
+origin of those links is `COCAT_PUBLIC_URL` when it is set, otherwise the host of the
+request that created them; set it when the server runs behind a proxy. Set
+`COCAT_PROXY_PREFIX` the same way for the API: the UI is served under that prefix too.
+
+The login cookie is `Secure`, so browsers only keep it over HTTPS or on `localhost`.
 
 `COCAT_TRUSTED_PROXIES` tells the per-client rate limiter (10 login attempts per minute)
 which address to trust: with the default `0` it uses the socket peer, and behind a proxy
