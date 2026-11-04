@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from cocat.app.db import User as OrmUser
 from cocat.app.db import get_db
 from cocat.app.rooms import list_user_rooms
+from cocat.cli import _create_user
 
 COOKIE_NAME = "fastapiusersauth"
 
@@ -191,6 +192,20 @@ async def user_id(db_path: str, email: str) -> UUID:
         return (await user_by_email(session, email)).id
 
     return await in_session(db_path, work)
+
+
+async def ensure_user(db_path: str, email: str) -> UUID:
+    """Id of `email`, created with the default password when it is new."""
+
+    async def find(session: AsyncSession) -> UUID | None:
+        user = await session.scalar(select(OrmUser).filter_by(email=email))
+        return None if user is None else user.id
+
+    found = await in_session(db_path, find)
+    if found is not None:
+        return found
+    await _create_user(email, "pwd", False, db_path)
+    return await user_id(db_path, email)
 
 
 async def rooms_of(db_path: str, email: str) -> dict[str, str]:

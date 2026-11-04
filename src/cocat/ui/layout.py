@@ -30,7 +30,7 @@ def ui_url(request: Request, path: str) -> str:
 
 
 def login_link(request: Request, next_path: str) -> str:
-    """Login page carrying where to go back to; `urlencode` escapes `/`."""
+    """Login page returning to `next_path`, a browser path; `urlencode` escapes `/`."""
     return ui_url(request, "/login") + "?" + urlencode({"next": next_path})
 
 

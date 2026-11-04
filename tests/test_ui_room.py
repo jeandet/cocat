@@ -1,12 +1,12 @@
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from conftest import UI
 from nicegui.elements.input import Input
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from utils import (
     click,
+    ensure_user,
     in_session,
     rooms_of,
     should_notify,
@@ -14,7 +14,7 @@ from utils import (
     user_id,
 )
 
-from cocat.app.db import Invitation, Role, User, utcnow
+from cocat.app.db import Invitation, Role, utcnow
 from cocat.app.invitations import (
     INVITATION_LIFETIME,
     accept_invitation,
@@ -22,7 +22,6 @@ from cocat.app.invitations import (
     list_invitations,
 )
 from cocat.app.rooms import add_member, create_room, remove_member
-from cocat.cli import _create_user
 
 pytestmark = pytest.mark.anyio
 
@@ -31,18 +30,6 @@ pytestmark = pytest.mark.anyio
 def anyio_backend() -> str:
     # aiosqlite only runs on asyncio
     return "asyncio"
-
-
-async def ensure_user(db_path: str, email: str) -> UUID:
-    async def find(session: AsyncSession) -> UUID | None:
-        user = await session.scalar(select(User).filter_by(email=email))
-        return None if user is None else user.id
-
-    found = await in_session(db_path, find)
-    if found is None:
-        await _create_user(email, "pwd", False, db_path)
-        return await user_id(db_path, email)
-    return found
 
 
 async def shared_room(db_path: str, owner_email: str, member_email: str) -> str:
