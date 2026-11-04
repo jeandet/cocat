@@ -1,21 +1,27 @@
-from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TypeVar
+from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
 from conftest import UI
 from nicegui.client import Client
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from utils import click, fill, set_active, should_notify
+from utils import (
+    click,
+    fill,
+    in_session,
+    set_active,
+    should_notify,
+    user_by_email,
+)
+from utils import (
+    rooms_of as _rooms_of,
+)
 
-from cocat.app.db import Role, User, get_db
-from cocat.app.rooms import add_member, create_room, list_user_rooms
+from cocat.app.db import Role
+from cocat.app.rooms import add_member, create_room
 from cocat.cli import _create_user
 
 pytestmark = pytest.mark.anyio
-
-T = TypeVar("T")
 
 
 @pytest.fixture()
@@ -24,29 +30,8 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-async def in_session(ui: UI, work: Callable[[AsyncSession], Awaitable[T]]) -> T:
-    db = get_db(ui.db_path)
-    try:
-        async with db.async_session_maker() as session:
-            return await work(session)
-    finally:
-        await db.engine.dispose()
-
-
-async def user_by_email(session: AsyncSession, email: str) -> User:
-    user = await session.scalar(select(User).filter_by(email=email))
-    assert user is not None
-    return user
-
-
 async def rooms_of(ui: UI) -> dict[str, str]:
-    async def rooms(session: AsyncSession) -> dict[str, str]:
-        user = await user_by_email(session, ui.email)
-        return {
-            room.name: room.id for room, _ in await list_user_rooms(session, user.id)
-        }
-
-    return await in_session(ui, rooms)
+    return await _rooms_of(ui.db_path, ui.email)
 
 
 async def room_named(ui: UI, name: str) -> str:
@@ -67,7 +52,7 @@ async def add_room_owned_elsewhere(ui: UI, name: str) -> str:
         await add_member(session, room.id, member.id, Role.editor)
         return room.id
 
-    return await in_session(ui, add)
+    return await in_session(ui.db_path, add)
 
 
 def unique(name: str) -> str:

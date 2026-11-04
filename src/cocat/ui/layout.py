@@ -1,3 +1,4 @@
+import os
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 from urllib.parse import urlencode
@@ -31,6 +32,23 @@ def ui_url(request: Request, path: str) -> str:
 def login_link(request: Request, next_path: str) -> str:
     """Login page carrying where to go back to; `urlencode` escapes `/`."""
     return ui_url(request, "/login") + "?" + urlencode({"next": next_path})
+
+
+def public_base(request: Request) -> str:
+    """Origin other people reach the app at, for the links we hand out.
+
+    A share link is opened from someone else's browser, so its origin is not the
+    Host header of the request that created it; a deployment behind a proxy sets
+    `COCAT_PUBLIC_URL` instead.
+    """
+    configured = os.environ.get("COCAT_PUBLIC_URL")
+    if configured:
+        return configured.rstrip("/")
+    return f"{request.url.scheme}://{request.url.netloc}"
+
+
+def absolute_url(request: Request, path: str) -> str:
+    return public_base(request) + ui_url(request, path)
 
 
 async def current_user(ctx: UIContext, request: Request) -> User | None:

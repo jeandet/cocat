@@ -3,9 +3,11 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from typing import TypeVar
+from uuid import UUID
 
 import httpx
 import requests
@@ -14,11 +16,15 @@ from nicegui import core
 from nicegui.testing.general import nicegui_reset_globals
 from nicegui.testing.user import User
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from cocat.app.db import User as OrmUser
 from cocat.app.db import get_db
+from cocat.app.rooms import list_user_rooms
 
 COOKIE_NAME = "fastapiusersauth"
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -164,16 +170,48 @@ async def should_notify(user: User, message: str, timeout: float = 1.0) -> None:
         await asyncio.sleep(0.01)
 
 
-async def set_active(db_path: str, email: str, active: bool) -> None:
+async def in_session(db_path: str, work: Callable[[AsyncSession], Awaitable[T]]) -> T:
+    """Run `work` against a fresh session, then release the engine."""
     db = get_db(db_path)
     try:
         async with db.async_session_maker() as session:
-            user = await session.scalar(select(OrmUser).filter_by(email=email))
-            assert user is not None
-            user.is_active = active
-            await session.commit()
+            return await work(session)
     finally:
         await db.engine.dispose()
+
+
+async def user_by_email(session: AsyncSession, email: str) -> OrmUser:
+    user = await session.scalar(select(OrmUser).filter_by(email=email))
+    assert user is not None
+    return user
+
+
+async def user_id(db_path: str, email: str) -> UUID:
+    async def work(session: AsyncSession) -> UUID:
+        return (await user_by_email(session, email)).id
+
+    return await in_session(db_path, work)
+
+
+async def rooms_of(db_path: str, email: str) -> dict[str, str]:
+    """Room ids by name for the user's rooms."""
+
+    async def work(session: AsyncSession) -> dict[str, str]:
+        user = await user_by_email(session, email)
+        return {
+            room.name: room.id for room, _ in await list_user_rooms(session, user.id)
+        }
+
+    return await in_session(db_path, work)
+
+
+async def set_active(db_path: str, email: str, active: bool) -> None:
+    async def work(session: AsyncSession) -> None:
+        user = await user_by_email(session, email)
+        user.is_active = active
+        await session.commit()
+
+    await in_session(db_path, work)
 
 
 def get_credential(service_name: str, username: str | None) -> Credentials | None:
