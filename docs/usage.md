@@ -180,13 +180,15 @@ page mails a new password link only when a relay is configured.
 | `/ui/forgot-password` | ask for a reset link by email |
 | `/ui/reset-password` | the page the reset link opens |
 | `/ui/rooms` | your rooms, create one, rename or delete the ones you own, leave the others |
-| `/ui/rooms/{room_id}` | members and their roles, transfer the ownership, remove a member, invite by email, pending invitations, create and revoke share links |
+| `/ui/rooms/{room_id}` | members and their roles (the owner picks `editor` or `viewer`), transfer the ownership, remove a member, invite by email or by link, pending invitations, create and revoke share links |
 | `/ui/invitation` | who invites you to which room, and the button that joins it |
 | `/ui/account` | change your password |
 | `/ui/confirm-email` | give an address to an account that signed in with a provider that hides it |
 
-Until roles are enforced, the UI only hands out the `editor` role: an invitation joins
-you as an editor, and there is no role picker.
+A `viewer` can read a room and follow what other members change, but the server drops every
+edit that viewer sends: the role is enforced on the websocket, not in the page. A role
+change closes that member's connection, so the new role applies immediately instead of
+when the browser reconnects.
 
 A share link looks like `http://127.0.0.1:8000/ui/invitation#<token>`: the token is in the
 URL fragment, which the browser keeps to itself, so it never reaches a server log. The
@@ -301,9 +303,10 @@ and nothing merges them by itself.
 
 ### Rooms and invitations
 
-Rooms have members with one of three roles: `owner`, `editor` and `viewer` (viewers are
-not enforced yet, so the API only hands out `editor`). Every user owns their personal
-room.
+Rooms have members with one of three roles: `owner`, `editor` and `viewer`. An editor
+writes to the room, a viewer only reads it: writes sent over a viewer's websocket are
+dropped, and an owner changes a role through the API or the room page. Every user owns
+their personal room.
 
 A logged-in user manages their rooms through `/api`, with the same `fastapiusersauth`
 cookie as the rest of the server:
@@ -316,7 +319,7 @@ cookie as the rest of the server:
 | `PATCH /api/rooms/{room_id}` | rename a room (owner) |
 | `DELETE /api/rooms/{room_id}` | delete a room (owner) |
 | `GET /api/rooms/{room_id}/members` | list the members (any member) |
-| `PATCH /api/rooms/{room_id}/members/{user_id}` | change a member role (owner), `editor` only for now |
+| `PATCH /api/rooms/{room_id}/members/{user_id}` | change a member role (owner), `editor` or `viewer` |
 | `DELETE /api/rooms/{room_id}/members/{user_id}` | remove a member, or leave (owner or self) |
 | `POST /api/rooms/{room_id}/owner` | transfer the ownership (owner) |
 | `POST /api/rooms/{room_id}/invitations` | create an invitation (owner) |

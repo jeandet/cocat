@@ -1,5 +1,14 @@
 # Version history
 
+## 0.15.0
+- A `viewer` is enforced, not just stored: the room websocket drops every document write a
+  viewer sends, so a viewer reads the room and receives other members' updates but cannot
+  change it. Editors are unaffected.
+- A role change closes that member's connections, so a downgrade applies at once instead of
+  when the browser reconnects.
+- The API accepts `viewer` for a member's role and for an invitation, and the room page
+  offers a role picker for each member and for a new invitation or share link.
+
 ## 0.14.0
 - OAuth logins are hardened the same way the mailer is: a placeholder address can no
   longer be registered (so nobody can pre-claim an ORCID iD), an identity is never linked
