@@ -162,6 +162,8 @@ def next_query(request: Request) -> str:
 
 
 def error_key(request: Request) -> str | None:
-    if request.query_params.get("created"):
-        return "created"
-    return request.query_params.get("error")
+    params = request.query_params
+    for flag in ("created", "sent", "reset"):
+        if params.get(flag):
+            return flag
+    return params.get("error")

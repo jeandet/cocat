@@ -13,7 +13,7 @@ from fastapi_users.db import BaseUserDatabase, SQLAlchemyUserDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import DB, User
-from .mail import Mailer, verification_mail
+from .mail import Mailer, reset_mail, verification_mail
 from .rooms import create_personal_room, get_role
 
 
@@ -45,7 +45,11 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def on_after_forgot_password(
         self, user: User, token: str, request: Request | None = None
     ) -> None:
-        print(f"User {user.id} requested a password reset.")
+        if self.mail is None or request is None:
+            return
+        from .accounts import reset_link  # accounts builds on this module
+
+        await self.mail.send(user.email, *reset_mail(reset_link(request, token)))
 
     async def on_after_request_verify(
         self, user: User, token: str, request: Request | None = None

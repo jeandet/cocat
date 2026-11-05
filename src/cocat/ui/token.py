@@ -34,4 +34,5 @@ def token_from_text(text: str) -> str:
     Signing in leaves the page behind and a fragment does not survive that, so
     the user gets a box to paste the whole link into.
     """
-    return text.partition("#")[2].strip() or text.strip()
+    words = (text.partition("#")[2] or text).split()
+    return words[0] if words else ""
