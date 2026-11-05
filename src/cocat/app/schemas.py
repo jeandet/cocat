@@ -61,7 +61,7 @@ class MemberOut(BaseModel):
 
 
 class RoleUpdate(BaseModel):
-    role: Literal["editor"]
+    role: Literal["viewer", "editor"]
 
 
 class OwnerTransfer(BaseModel):
@@ -70,7 +70,7 @@ class OwnerTransfer(BaseModel):
 
 class InvitationCreate(BaseModel):
     email: EmailStr | None = None
-    role: Literal["editor"] = "editor"
+    role: Literal["viewer", "editor"] = "editor"
     expires_in_days: int = Field(14, ge=1, le=90)
     max_uses: int | None = Field(None, ge=1)
 

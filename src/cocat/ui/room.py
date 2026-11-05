@@ -50,6 +50,7 @@ def register(ctx: UIContext) -> None:
         ui.link("My rooms", ui_url(request, "/rooms")).mark("back-to-rooms")
         dialog = ConfirmDialog()
         link = ""
+        invite_role = "editor"
 
         def leave() -> None:
             async def apply() -> None:
@@ -64,7 +65,7 @@ def register(ctx: UIContext) -> None:
             async with ctx.db.async_session_maker() as session:
                 current = await get_role(session, room_id, user.id)
             assert current is not None  # the page is only built for members
-            ui.label(f"You are an {current.value}")
+            ui.label(f"Your role: {current.value}")
             if current is not Role.owner:
                 ui.button("Leave", on_click=leave).mark("leave-room")
 
@@ -114,7 +115,9 @@ def register(ctx: UIContext) -> None:
             nonlocal link
 
             async def work(session: AsyncSession, actor: User) -> str:
-                _, token = await create_invitation(session, room_id, actor, Role.editor)
+                _, token = await create_invitation(
+                    session, room_id, actor, Role(invite_role)
+                )
                 return absolute_url(request, f"/invitation#{token}")
 
             link = await perform(ctx, work) or ""
@@ -122,9 +125,24 @@ def register(ctx: UIContext) -> None:
                 ui.notify("Share link created")
                 await invitations.refresh()
 
+        def set_invite_role(role: str) -> None:
+            nonlocal invite_role
+            invite_role = role
+
         def copy_link() -> None:
             ui.clipboard.write(link)
             ui.notify("Link copied")
+
+        async def change_role(member_id: UUID, email: str, role: str) -> None:
+            changed = await act(
+                ctx,
+                lambda session, actor: ctx.actions.set_member_role(
+                    session, room_id, actor, member_id, Role(role)
+                ),
+            )
+            if changed:
+                ui.notify(f"{email} is now a {role}")
+                await refresh_all()
 
         async def refresh_all() -> None:
             await heading.refresh()
@@ -141,7 +159,16 @@ def register(ctx: UIContext) -> None:
             for member, member_role in rows:
                 with ui.row().classes("items-center gap-2"):
                     ui.label(member.email).mark(f"member-{member.id}")
-                    ui.label(member_role.value)
+                    if current is Role.owner and member_role is not Role.owner:
+                        ui.select(
+                            ["editor", "viewer"],
+                            value=member_role.value,
+                            on_change=lambda event, id=member.id, email=member.email: (
+                                change_role(id, email, event.value)
+                            ),
+                        ).mark(f"role-{member.id}")
+                    else:
+                        ui.label(member_role.value)
                     if current is Role.owner and member_role is not Role.owner:
                         ui.button(
                             "Remove",
@@ -164,7 +191,7 @@ def register(ctx: UIContext) -> None:
                     session,
                     room_id,
                     actor,
-                    Role.editor,
+                    Role(invite_role),
                     address,
                     context.client.request,
                 ),
@@ -189,6 +216,11 @@ def register(ctx: UIContext) -> None:
                     return
                 rows = await list_invitations(session, room_id, actor)
             ui.label("Invitations").classes("text-xl")
+            ui.select(
+                ["editor", "viewer"],
+                value=invite_role,
+                on_change=lambda event: set_invite_role(event.value),
+            ).mark("invite-role")
             ui.input("Share link", value=link).props("readonly").mark("share-link")
             with ui.row().classes("items-center gap-2"):
                 ui.button("Create share link", on_click=create_link).mark(

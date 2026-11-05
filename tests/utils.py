@@ -13,6 +13,7 @@ import httpx
 import requests
 from fastapi import FastAPI, WebSocket
 from nicegui import core
+from nicegui.elements.select import Select
 from nicegui.testing.general import nicegui_reset_globals
 from nicegui.testing.user import User
 from sqlalchemy import select
@@ -166,6 +167,17 @@ def click(user: User, marker: str) -> None:
 
 def fill(user: User, marker: str, text: str) -> None:
     user.find(marker=marker).clear().type(text)
+
+
+def pick(user: User, marker: str, value: str) -> None:
+    """Choose `value` in the select carrying `marker`.
+
+    Assigning the value runs the element's change handler, which becomes a task
+    just like a click does.
+    """
+    element = next(iter(user.find(marker=marker).elements))
+    assert isinstance(element, Select)
+    element.value = value
 
 
 async def should_notify(user: User, message: str, timeout: float = 5.0) -> None:

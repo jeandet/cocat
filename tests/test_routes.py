@@ -184,25 +184,66 @@ def test_blank_room_name_is_a_bad_request(app_client):
     assert response.status_code == 400
 
 
-def test_viewer_role_not_assignable_yet(app_client):
+def test_the_owner_can_assign_the_viewer_role(app_client):
     make_user(app_client.db_path, "owner@x.org")
-    make_user(app_client.db_path, "editor@x.org")
+    make_user(app_client.db_path, "member@x.org")
     login(app_client.client, "owner@x.org")
     room = create_room(app_client)
     token = invite(app_client, room["id"])
-    join_room(app_client, "editor@x.org", token)
-
+    join_room(app_client, "member@x.org", token)
     login(app_client.client, "owner@x.org")
-    editor_id = next(
-        member["user_id"]
-        for member in list_members(app_client, room["id"])
-        if member["email"] == "editor@x.org"
-    )
-    member_url = f"/api/rooms/{room['id']}/members/{editor_id}"
+    member = member_id_of(app_client, room["id"], "member@x.org")
 
-    assert (
-        app_client.client.patch(member_url, json={"role": "viewer"}).status_code == 422
+    response = app_client.client.patch(
+        f"/api/rooms/{room['id']}/members/{member}", json={"role": "viewer"}
     )
+
+    assert response.status_code == 204
+    roles = [
+        row["role"]
+        for row in list_members(app_client, room["id"])
+        if row["email"] == "member@x.org"
+    ]
+    assert roles == ["viewer"]
+
+
+def test_the_owner_role_is_still_not_assignable(app_client):
+    make_user(app_client.db_path, "owner@x.org")
+    make_user(app_client.db_path, "member@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    token = invite(app_client, room["id"])
+    join_room(app_client, "member@x.org", token)
+    login(app_client.client, "owner@x.org")
+    member = member_id_of(app_client, room["id"], "member@x.org")
+
+    response = app_client.client.patch(
+        f"/api/rooms/{room['id']}/members/{member}", json={"role": "owner"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_an_invitation_can_grant_the_viewer_role(app_client):
+    make_user(app_client.db_path, "owner@x.org")
+    make_user(app_client.db_path, "guest@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    response = app_client.client.post(
+        f"/api/rooms/{room['id']}/invitations", json={"role": "viewer"}
+    )
+    assert response.status_code == 201
+    token = response.json()["token"]
+
+    preview = app_client.client.post("/api/invitations/preview", json={"token": token})
+    assert preview.status_code == 200
+    assert preview.json()["role"] == "viewer"
+
+    join_room(app_client, "guest@x.org", token)
+    rooms = app_client.client.get("/api/rooms").json()
+    assert [
+        (room_["id"], room_["role"]) for room_ in rooms if room_["id"] == room["id"]
+    ] == [(room["id"], "viewer")]
 
 
 def test_invitation_token_never_in_a_path(app_client):
