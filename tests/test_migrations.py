@@ -271,3 +271,14 @@ def test_existing_users_are_verified(tmp_path):
     create_tables(db_path)
 
     assert read_rows(db_path, 'SELECT is_verified FROM "user"') == [(1,)]
+
+
+def test_oauth_accounts_are_stored(tmp_path: Path) -> None:
+    db_path = tmp_path / "oauth.db"
+    make_legacy_db(db_path, {"john@a.org": ["x"]})
+
+    create_tables(db_path)
+
+    assert "oauth_account" in table_names(db_path)
+    indexes = read_rows(db_path, "PRAGMA index_list('oauth_account')")
+    assert any(row[1].startswith("sqlite_autoindex_oauth_account") for row in indexes)

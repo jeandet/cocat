@@ -10,6 +10,7 @@ from alembic.config import Config
 from anyio import Lock
 from fastapi import Depends
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
+from fastapi_users_db_sqlalchemy import SQLAlchemyBaseOAuthAccountTableUUID
 from fastapi_users_db_sqlalchemy.access_token import (
     SQLAlchemyBaseAccessTokenTableUUID,
 )
@@ -21,6 +22,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     String,
+    UniqueConstraint,
     event,
     inspect,
     text,
@@ -31,7 +33,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
@@ -44,8 +46,16 @@ class Base(DeclarativeBase):
     pass
 
 
+class OAuthAccount(SQLAlchemyBaseOAuthAccountTableUUID, Base):
+    __table_args__ = (UniqueConstraint("oauth_name", "account_id"),)
+    user: Mapped["User"] = relationship(back_populates="oauth_accounts")
+
+
 class User(SQLAlchemyBaseUserTableUUID, Base):
     rooms = Column(JSON, default=[], nullable=False)
+    oauth_accounts: Mapped[list[OAuthAccount]] = relationship(
+        back_populates="user", lazy="selectin", cascade="all, delete-orphan"
+    )
 
 
 class AccessToken(SQLAlchemyBaseAccessTokenTableUUID, Base):
@@ -159,7 +169,7 @@ def get_db(path: str) -> DB:
     async def get_user_db(
         session: AsyncSession = Depends(get_async_session),
     ) -> AsyncGenerator[SQLAlchemyUserDatabase]:
-        yield SQLAlchemyUserDatabase(session, User)
+        yield SQLAlchemyUserDatabase(session, User, OAuthAccount)
 
     return DB(
         engine=engine,

@@ -1,6 +1,9 @@
 import pytest
 from conftest import UI
-from utils import click, fill, set_active, should_notify
+from sqlalchemy.ext.asyncio import AsyncSession
+from utils import click, fill, in_session, set_active, should_notify, user_by_email
+
+from cocat.app.db import OAuthAccount
 
 pytestmark = pytest.mark.anyio
 
@@ -100,3 +103,25 @@ async def test_change_is_refused_after_deactivation(ui: UI) -> None:
 def anyio_backend() -> str:
     """aiosqlite only runs on asyncio, so these tests cannot use trio."""
     return "asyncio"
+
+
+async def test_an_oauth_account_cannot_change_its_password(ui: UI) -> None:
+    async def link(session: AsyncSession) -> None:
+        account = await user_by_email(session, ui.email)
+        session.add(
+            OAuthAccount(
+                user_id=account.id,
+                oauth_name="orcid",
+                access_token="token",
+                account_id="orcid-1",
+                account_email="orcid@example.org",
+            )
+        )
+        await session.commit()
+
+    await in_session(ui.db_path, link)
+    await ui.log_in()
+    await ui.user.open("/ui/account")
+
+    await ui.user.should_see("This account signs in with orcid.")
+    await ui.user.should_not_see(marker="change-password")

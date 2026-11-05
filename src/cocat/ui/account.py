@@ -2,10 +2,11 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse
 from nicegui import ui
 
+from ..app.mail import is_placeholder
 from ..app.schemas import UserUpdate
 from .auth import authenticate
 from .context import UIContext
-from .layout import COOKIE_NAME, page_header, require_user
+from .layout import COOKIE_NAME, page_header, require_user, ui_url
 
 
 def register(ctx: UIContext) -> None:
@@ -17,6 +18,14 @@ def register(ctx: UIContext) -> None:
         page_header(request, user)
         ui.label("Account").classes("text-2xl")
         ui.label(user.email).mark("account-email")
+        if is_placeholder(user.email):
+            ui.link("Confirm your email", ui_url(request, "/confirm-email")).mark(
+                "nav-confirm-email"
+            )
+        if user.oauth_accounts:
+            names = ", ".join(sorted(a.oauth_name for a in user.oauth_accounts))
+            ui.label(f"This account signs in with {names}.")
+            return None
         current = ui.input("Current password").props("type=password")
         current.mark("current-password")
         new = ui.input("New password").props("type=password")

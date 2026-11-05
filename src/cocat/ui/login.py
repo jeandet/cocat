@@ -28,4 +28,8 @@ def register(ctx: UIContext) -> None:
                 ui_url(request, "/forgot-password"),
             )
         ).mark("login-form")
+        for name in ctx.providers:
+            ui.link(
+                f"Sign in with {name}", ui_url(request, f"/oauth/{name}/login")
+            ).mark(f"oauth-{name}")
         return None

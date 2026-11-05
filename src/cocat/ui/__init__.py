@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 from nicegui import ui
 
+from ..app.oauth import make_oauth_router as make_api_oauth_router
 from ..app.urls import PAGES_MOUNT
 from .auth import make_auth_router
 from .context import UIContext
+from .oauth import make_router as make_web_oauth_router
 from .reset import make_reset_router
 from .signup import make_signup_router
 
@@ -17,12 +19,27 @@ def mount_ui(app: FastAPI, ctx: UIContext) -> None:
     app.include_router(make_auth_router(ctx))
     app.include_router(make_signup_router(ctx))
     app.include_router(make_reset_router(ctx))
+    for name, provider in ctx.providers.items():
+        app.include_router(
+            make_api_oauth_router(
+                ctx.backend, provider, f"{ctx.public_base}/auth/{name}/callback"
+            ),
+            prefix=f"/auth/{name}",
+            tags=["auth"],
+        )
+        app.include_router(
+            make_web_oauth_router(
+                ctx, provider, f"{ctx.public_base}/ui/oauth/{name}/callback"
+            ),
+            prefix=f"/ui/oauth/{name}",
+        )
     ui.run_with(app, mount_path=PAGES_MOUNT, title="cocat")
     register_pages(ctx)
 
 
 def register_pages(ctx: UIContext) -> None:
     from .account import register as register_account
+    from .confirm_email import register as register_confirm_email
     from .invitation import register as register_invitation
     from .login import register as register_login
     from .reset import register as register_reset
@@ -39,3 +56,4 @@ def register_pages(ctx: UIContext) -> None:
     register_account(ctx)
     register_signup(ctx)
     register_verify(ctx)
+    register_confirm_email(ctx)

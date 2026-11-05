@@ -27,6 +27,12 @@ from .connections import Connections
 from .db import DB, User, get_db
 from .db import Room as RoomModel
 from .mail import Mailer
+from .oauth import (
+    Provider,
+    TrustedEmailClient,
+    build_clients,
+    providers_from_env,
+)
 from .prefix import PrefixPath
 from .ratelimit import RateLimiter, limit, load_trusted_proxies
 from .rooms import RoomError, list_members, list_user_rooms
@@ -73,6 +79,16 @@ class StoredRoom(Room):
         async with self._db.async_session_maker() as session:
             if await session.get(RoomModel, self.id) is None:
                 remove_room_file(self._directory, self.id)
+
+
+def make_providers(oauth: Any = None) -> dict[str, Provider]:
+    """Read the providers, or take the ones a test hands over."""
+    if oauth is None:
+        return build_clients(providers_from_env())
+    return {
+        config.name: Provider(config, TrustedEmailClient(config, client))
+        for config, client in oauth
+    }
 
 
 class CocatApp:  # pragma: nocover
@@ -199,6 +215,16 @@ class CocatApp:  # pragma: nocover
             members = await list_members(session, room_id, user)
             return {"users": [member.email for member, _ in members]}
 
+        providers = make_providers(oauth)
+        public_base = ""
+        if providers:
+            configured = os.environ.get("COCAT_PUBLIC_URL", "").strip()
+            if not configured:
+                raise ValueError(
+                    "COCAT_PUBLIC_URL is required to build OAuth redirect URLs"
+                )
+            public_base = configured.rstrip("/") + root_path
+
         mount_ui(
             app,
             UIContext(
@@ -206,6 +232,8 @@ class CocatApp:  # pragma: nocover
                 backend=backend,
                 actions=RoomActions(self.connections, update_dir, mail),
                 check_limit=check_limit,
+                providers=providers,
+                public_base=public_base,
             ),
         )
 

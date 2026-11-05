@@ -15,18 +15,21 @@ from nicegui.testing.user import User as SimulatedUser
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
 from utils import (
+    FakeOAuthClient,
     RecordingMail,
     clean_nicegui,
     create_room,
     create_user,
     log_in,
     make_app,
+    oauth_provider,
     ui_simulation,
     wait_for_server,
 )
 
 from cocat.app.app import CocatApp
 from cocat.app.db import User, get_db
+from cocat.app.oauth import OAuthProviderConfig
 from cocat.cli import _create_user
 
 
@@ -100,6 +103,7 @@ class UI:
     db_path: str
     update_dir: str
     mail: RecordingMail | None = None
+    oauth_client: FakeOAuthClient | None = None
     email: str = "ui@test.org"
     password: str = "pwd"
 
@@ -109,13 +113,16 @@ class UI:
 
 @asynccontextmanager
 async def _simulated_ui(
-    update_dir: str, db_path: str, mail: RecordingMail | None = None
+    update_dir: str,
+    db_path: str,
+    mail: RecordingMail | None = None,
+    oauth: list[tuple[OAuthProviderConfig, FakeOAuthClient]] | None = None,
 ) -> AsyncIterator[UI]:
     await _create_user(UI.email, UI.password, False, db_path)
     built: list[CocatApp] = []
 
     def make() -> FastAPI:
-        built.append(CocatApp(update_dir, db_path, mail=mail))
+        built.append(CocatApp(update_dir, db_path, mail=mail, oauth=oauth))
         return built[-1].app
 
     async with ui_simulation(make) as (_, user):
@@ -125,6 +132,7 @@ async def _simulated_ui(
             db_path=db_path,
             update_dir=update_dir,
             mail=mail,
+            oauth_client=None if oauth is None else oauth[0][1],
         )
 
 
@@ -201,6 +209,32 @@ def server(free_tcp_port: int, update_dir: str, db_path: str):
     yield host, free_tcp_port
     os.kill(p.pid, signal.SIGINT)
     p.wait()
+
+
+@pytest.fixture()
+async def ui_oauth(
+    update_dir: str, db_path: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[UI]:
+    monkeypatch.setenv("COCAT_PUBLIC_URL", "https://testserver")
+    client = FakeOAuthClient()
+    config = oauth_provider(verifies_email=True)
+    async with _simulated_ui(
+        update_dir, db_path, oauth=[(config, client)]
+    ) as simulated:
+        yield simulated
+
+
+@pytest.fixture()
+async def ui_oauth_placeholder(
+    update_dir: str, db_path: str, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[UI]:
+    monkeypatch.setenv("COCAT_PUBLIC_URL", "https://testserver")
+    client = FakeOAuthClient(email=None)
+    config = oauth_provider()
+    async with _simulated_ui(
+        update_dir, db_path, oauth=[(config, client)]
+    ) as simulated:
+        yield simulated
 
 
 @pytest.fixture()

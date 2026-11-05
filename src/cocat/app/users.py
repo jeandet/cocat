@@ -10,10 +10,11 @@ from fastapi_users.authentication import (
     JWTStrategy,
 )
 from fastapi_users.db import BaseUserDatabase, SQLAlchemyUserDatabase
+from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .db import DB, User
-from .mail import Mailer, reset_mail, verification_mail
+from .db import DB, OAuthAccount, User
+from .mail import Mailer, is_placeholder, reset_mail, verification_mail
 from .rooms import create_personal_room, get_role
 
 
@@ -62,6 +63,54 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             user.email, *verification_mail(verification_link(request, token))
         )
 
+    async def oauth_callback(
+        self,
+        oauth_name: str,
+        access_token: str,
+        account_id: str,
+        account_email: str,
+        expires_at: int | None = None,
+        refresh_token: str | None = None,
+        request: Request | None = None,
+        *,
+        associate_by_email: bool = False,
+        is_verified_by_default: bool = False,
+    ) -> User:
+        """Link an OAuth identity, but only to an account that proved its address.
+
+        Associating by email is an account takeover waiting to happen when the
+        local account never proved it owns the address: anybody who registers
+        it first would inherit the identity. A provider that does not hand over
+        a usable address gets a placeholder, which never matches an account.
+        """
+        if associate_by_email and _real_address(account_email):
+            existing = await self._existing(account_email)
+            if existing is not None and not existing.is_verified:
+                raise UserAlreadyExists()
+            associate_by_email = existing is not None
+        return await super().oauth_callback(
+            oauth_name,
+            access_token,
+            account_id,
+            account_email,
+            expires_at,
+            refresh_token,
+            request,
+            associate_by_email=associate_by_email,
+            is_verified_by_default=is_verified_by_default
+            and not is_placeholder(account_email),
+        )
+
+    async def _existing(self, email: str) -> User | None:
+        try:
+            return await self.get_by_email(email)
+        except UserNotExists:
+            return None
+
+
+def _real_address(email: str) -> bool:
+    return not is_placeholder(email)
+
 
 def make_user_manager(
     user_db: SQLAlchemyUserDatabase, secret: str, mail: Mailer | None = None
@@ -107,7 +156,7 @@ class Backend:
 
     def user_manager(self, session: AsyncSession) -> UserManager:
         return make_user_manager(
-            SQLAlchemyUserDatabase(session, User), self.secret, self.mail
+            SQLAlchemyUserDatabase(session, User, OAuthAccount), self.secret, self.mail
         )
 
     async def resolve_user(
@@ -133,7 +182,9 @@ def get_backend(db: DB, secret: str, mail: Mailer | None = None) -> Backend:
             user = await user_from_token(
                 session,
                 fastapiusersauth,
-                make_user_manager(SQLAlchemyUserDatabase(session, User), secret, mail),
+                make_user_manager(
+                    SQLAlchemyUserDatabase(session, User, OAuthAccount), secret, mail
+                ),
                 get_jwt_strategy(),
             )
             if (

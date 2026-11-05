@@ -33,7 +33,9 @@ def is_placeholder(email: str) -> bool:
     that stand-in, and nothing is ever mailed to it.
     """
     _, _, domain = email.rpartition("@")
-    return domain.lower() == PLACEHOLDER_DOMAIN
+    domain = domain.lower()
+    # One subdomain per provider, so two providers cannot collide on the same id.
+    return domain == PLACEHOLDER_DOMAIN or domain.endswith("." + PLACEHOLDER_DOMAIN)
 
 
 class Mailer(Protocol):

@@ -5,8 +5,8 @@ import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
-from typing import TypeVar, cast
+from dataclasses import dataclass, field
+from typing import Any, TypeVar, cast
 from uuid import UUID
 
 import httpx
@@ -22,6 +22,7 @@ from cocat.app.app import CocatApp
 from cocat.app.connections import Connections
 from cocat.app.db import User as OrmUser
 from cocat.app.db import get_db
+from cocat.app.oauth import OAuthProviderConfig
 from cocat.app.rooms import list_user_rooms
 from cocat.cli import _create_user
 
@@ -238,6 +239,48 @@ async def set_verified(db_path: str, email: str, verified: bool) -> None:
         await session.commit()
 
     await in_session(db_path, work)
+
+
+@dataclass
+class FakeOAuthClient:
+    """Stands in for an httpx-oauth client: no discovery, no network."""
+
+    name: str = "orcid"
+    email: str | None = "guest@example.org"
+    authorization_url: str = ""
+    token: dict[str, Any] = field(default_factory=lambda: {"access_token": "token"})
+    failure: Exception | None = None
+
+    async def get_authorization_url(
+        self,
+        redirect_uri: str,
+        state: str | None = None,
+        scope: list[str] | None = None,
+    ) -> str:
+        self.authorization_url = (
+            f"https://provider.example.org/authorize?state={state}"
+            f"&scope={','.join(scope or [])}"
+        )
+        return self.authorization_url
+
+    async def get_access_token(self, code: str, redirect_uri: str) -> dict[str, Any]:
+        if self.failure is not None:
+            raise self.failure
+        return self.token
+
+    async def get_id_email(self, token: str) -> tuple[str, str | None]:
+        return "orcid-1234", self.email
+
+
+def oauth_provider(name: str = "orcid", **kwargs: Any) -> OAuthProviderConfig:
+    settings: dict[str, Any] = {
+        "name": name,
+        "discovery_url": "https://provider.example.org/.well-known/openid-configuration",
+        "client_id": "client-id",
+        "client_secret": "client-secret",
+    }
+    settings.update(kwargs)
+    return OAuthProviderConfig(**settings)
 
 
 class RecordingMail:
