@@ -2,111 +2,102 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give the self-service rooms app a real account lifecycle: an SMTP sender configured by environment variables, open self-registration with email verification, password reset by email, invitation emails, and ORCID login in the web UI — the whole phase 3 of the design.
+**Goal:** Send mail from cocat (verification, password reset, room invitations) and let people sign in with ORCID, without making either one mandatory.
 
-**Architecture:** Two new app-level modules carry the new capabilities, so the REST API and the NiceGUI pages keep sharing one implementation: `app/mail.py` (a `Mailer` protocol, a `Mail` SMTP implementation read from the environment, and the message templates) and `app/accounts.py` (verification and reset link building plus `start_verification`, the one place that decides "verification skipped" when no SMTP is configured). `app/oauth.py` turns a JSON provider list into httpx_oauth `OpenID` clients wrapped so the email a provider asserts is only ever used when the provider is flagged as verifying emails. Tokens travel in URL fragments consumed by UI pages (never in a path or a query) and in POST bodies on the stock fastapi-users routes; no token is ever logged. Everything is wired through the existing `CocatApp` → `UIContext` seam, and every test runs with a recording mailer and fake OAuth clients, so no test opens a socket.
+**Architecture:** Two app-level modules carry the new behaviour, so both front ends share it exactly as they share `rooms.py`: `app/mail.py` (an SMTP sender plus the message templates) and `app/accounts.py` (starting a verification, building the links). `app/oauth.py` registers one provider per entry of `COCAT_OAUTH_PROVIDERS` using fastapi-users' OAuth router and `httpx_oauth`'s `OpenID` client, wrapped so that an email the provider did not verify never reaches an account. The UI keeps calling services directly; only the flows that are HTTP by nature (a link click, an OAuth redirect) are routes, and those routes redirect rather than render. Tokens travel in URL fragments, read by JavaScript and answered through the socket, because fastapi-users 15 has no GET route that takes a token.
 
-**Tech Stack:** Python ≥ 3.10, FastAPI, fastapi-users 15 (`fastapi-users[sqlalchemy,oauth]`, which brings `httpx-oauth`), NiceGUI 3.19, SQLAlchemy 2 + alembic, stdlib `smtplib`/`email.message` for SMTP (no new mail dependency), pytest + anyio.
+**Tech Stack:** Python ≥ 3.10, FastAPI 0.16x, fastapi-users 15 with the `sqlalchemy` and `oauth` extras, `httpx-oauth` 0.17 (not installed yet), stdlib `smtplib`, NiceGUI 3.19, Alembic, SQLite.
 
 **Spec:** `docs/superpowers/specs/2026-11-04-self-service-rooms-design.md`, phase 3 (lines 132-150, 173-180, 196-204).
 
-**Review history:** First draft, written after checking the libraries actually installed in `.venv` on 2026-11-05: `fastapi-users 15.0.5` is present but **`httpx-oauth` is not** (the `oauth` extra is missing, and `fastapi_users.router.oauth` fails to import without it), and neither `aiosmtplib` nor `emails` is installed. The plan therefore adds the `oauth` extra in the task that needs it and builds mail on the standard library. fastapi-users 15 exposes **no GET token-in-path route** for verification or reset, which is what makes the fragment-link design possible without fighting the library.
-
----
+**Review history:** First draft (commit `9be1fee`) proposed the mail sender, an `authenticate` override as the verification gate, `placeholder_email(...) = f"{account_id}@{provider}.invalid"`, `associate_by_email=config.verifies_email`, `OAuth2AuthorizeCallback` as a dependency, and a `hand_off` helper. An independent review found 22 problems, all verified against the installed libraries and all applied here: the `.invalid` placeholder breaks `UserRead` (pydantic `EmailStr`) and would 500 `/api/me` (finding 1); the provider scopes dropped `openid` (2); `associate_by_email` linked onto an unverified local account, which is an account takeover (3); ORCID usually returns no email at all, so a stock-router flow would never work and `confirm-email` could hit an unhandled `UserAlreadyExists` (4); `build_client` was untestable because `OpenID.__init__` performs a blocking discovery request (5); a provider outage at boot would crash the server (6); the UI callback skipped the `is_active` check (7); `OAuth2AuthorizeCallback` cannot be declared at registration time without a request (8); SMTP failures and the missing timeout were unhandled (9, 10); API registration never verified anyone (11); overriding `authenticate` also broke the account page's current-password check (12); OAuth redirect URLs ignored the proxy prefix (13); `/auth/request-verify-token` was unlimited (14); login copy still said registration is admin-only (15); OAuth users could never change a password (16); three planned tests could not be written (17); three helpers were avoidable (18); the trust rules around provider-asserted emails were undocumented (19); the `oauth_account` migration lacked a unique constraint (20); `httpx-oauth` was unpinned while being imported at module top (21); and the SMTP env parsing accepted nonsense (22).
 
 ## Global Constraints
 
-- **Python ≥ 3.10.** CI runs 3.10-3.14. No `except*`/`ExceptionGroup`, no `enum.StrEnum`, no `typing.Self`, no `asyncio.timeout`, no `datetime.UTC`. `X | Y` annotations and `match` are fine.
-- **100 % coverage** and no new `# pragma: nocover`. Test helpers are measured too, so every helper must be used.
-- **No test may open a network connection.** Mail goes through a `RecordingMail` test double; OAuth goes through fake clients; `smtplib.SMTP` is monkeypatched when the real `Mail.send` is exercised. Never construct `httpx_oauth.clients.openid.OpenID` in a test (its `__init__` does a blocking discovery request); production code builds it at startup only.
-- **Tokens never leak.** An invitation, verification or reset token appears only (a) in the fragment of the link we hand out, (b) in a POST body, (c) in the raw token returned by a service function to its caller. Never in a path, a query string, a log line, a notification — except the sender's own freshly created link, which the UI shows to be copied when no SMTP is configured.
-- **The server works with no SMTP configured.** That is the default, and the default in the whole test suite: `mail=None` means verification is skipped and links are shown in the UI.
-- **One rate limiter.** Every new public entry point (register, forgot-password, reset, sign-up, provider login) goes through the existing `check_limit`.
-- **The UI calls services, never our own HTTP.** Pages use `manager`, `rooms`/`invitations` services and `RoomActions` directly; the stock fastapi-users routes stay the API/plugin twin.
-- **Secrets stay in the environment.** The SMTP password and the OAuth client secrets have no defaults, are never logged, and are `repr=False` in the dataclasses that hold them.
-- **`pyproject.toml`**: the `server` extra becomes `fastapi-users[sqlalchemy,oauth] >=15.0.1,<16.0.0`; `nicegui` and the rest stay as they are. The version bump belongs to the release task only.
-- **Run full checks before each commit**: `export PATH=$PWD/.venv/bin:$PATH; coverage run -m pytest tests -q && coverage report --fail-under=100 && ruff check src tests && ruff format --check src tests && mypy src tests` (~2 m 15 s, so use a generous timeout). One run at a time.
-- **Never stage `.coverage`, `__pycache__`, `.venv`, `*.secret`.** Stage explicit paths, never `git add .`.
+- Python ≥ 3.10 and the CI matrix 3.10-3.14. No `except*`, `StrEnum`, `typing.Self`, `asyncio.timeout`, `datetime.UTC`, tomllib, or PEP 701 f-strings.
+- 100 % coverage, no new `# pragma: nocover`, no coverage exclusions. Test helpers are measured too, so every helper added needs a user.
+- **No test may touch the network.** A fake `Mailer` records what would be sent; a fake OAuth client returns canned tokens and profiles; `smtplib.SMTP` is monkeypatched where the real `send` runs; `OpenID` is never constructed in a test (its constructor blocks on a discovery request).
+- Tokens (verification, reset, invitation) never appear in a path, a query string, a log line, an error message or a notification. They travel in URL fragments and are read with `ui.run_javascript`; the socket answer is a POST body. The one exception is deliberate: with no SMTP configured, a freshly created link is shown in the UI so the operator can copy it.
+- The server runs with no SMTP and no OAuth configured. `mail=None` means "verification is skipped, links are shown in the UI"; `oauth=[]` means "the login page has no provider buttons".
+- One rate limiter, the existing `check_limit` (10 calls per minute, `RateLimiter(10, 60.0)`), shared by every unauthenticated form: `/auth/jwt/login`, `/auth/register`, `/auth/forgot-password`, `/auth/request-verify-token`, `POST /ui/login`, `POST /ui/signup`, `POST /ui/forgot-password`.
+- The UI calls services, never its own HTTP surface, except where the operation is a browser navigation.
+- Secrets (`COCAT_SMTP_PASSWORD`, OAuth client secrets) come from the environment, live in `repr=False` fields or `SecretStr`, and are never printed, logged or rendered.
+- `pyproject.toml`: the server extra becomes `"fastapi-users[sqlalchemy,oauth] >=15.0.1,<16.0.0"` plus an explicit `"httpx-oauth >=0.17,<0.18"` (the extra's bound is `>=0.13`; `fastapi_users.router.oauth` imports it at module import, so an unexpected version breaks the app, not just the tests). The version bump belongs to Task 6.
+- Full gate before each commit: `export PATH=$PWD/.venv/bin:$PATH; coverage run -m pytest tests -q && coverage report --fail-under=100 && ruff check src tests && ruff format --check src tests && mypy src tests`. The full run takes about two minutes twenty; give the shell a timeout of at least 900 s.
+- Stage explicit paths. Never commit `__pycache__`, `.coverage`, `.venv`, `*.secret`, temporary databases. Never push.
 
 ## Review Focus
 
-1. **Nobody is locked out the day SMTP is switched on.** Existing users are grandfathered by migration, the CLI creates verified users, and the login gate only refuses unverified accounts when a mailer is configured. Test owner: Task 1.
-2. **The login gate is one gate.** `UserManager.authenticate` is the single override; the REST `/auth/jwt/login` and the UI form must both honour it, and neither may be quietly bypassed by the OAuth path. Test owner: Tasks 1, 5.
-3. **Tokens never reach a path, a query, a log or a notification.** Fragments are read client-side; the stock routes take tokens in bodies; the mailer never logs. Test owner: Tasks 2, 3.
-4. **No account takeover through OAuth.** A provider's asserted email is used only when the provider is flagged `verifies_email`; otherwise the account gets a `.invalid` placeholder and the user confirms a real address. Test owner: Tasks 5, 6.
-5. **The ORCID-hides-the-email case is handled, not special-cased.** No email, unverified email and untrusted email all end on the same confirm-email page. Test owner: Tasks 5, 6.
-6. **Registration abuse is bounded.** `/auth/register` is public now, so it is rate limited in both front ends, and verification is what makes a created account usable. Test owner: Task 2.
-7. **Email invitations do not regress the no-SMTP path.** The link stays visible in the room page when no mailer is configured. Test owner: Task 4.
-8. **Tests stay offline and fast.** No SMTP, no discovery request, no ORCID. Test owner: Tasks 1, 5.
+1. **Nobody is locked out when SMTP appears.** A deployment that upgrades from 0.13.0 has users with `is_verified = 0`; migration 0003 grandfathers them, `cocat create-user` creates verified users, and the login gate only exists when a mailer is configured. Test owner: Task 1.
+2. **The verification gate lives in one place per front end and does not pretend to be `authenticate`.** REST uses `requires_verification=mail is not None`; the UI checks `not user.is_verified` after a successful `authenticate`, so the account page's current-password check keeps working. Test owner: Tasks 1, 2.
+3. **No token reaches a log, a path or a query.** Fragment links, POST bodies, and a share-link box only when no mailer is configured. Test owner: Tasks 2, 3, 4.
+4. **No account takeover through OAuth.** An asserted email is associated with an existing account only when the provider is flagged `verifies_email`, a mailer is configured (so the local address was proven once), and the local account is verified; otherwise the account is separate. Test owner: Task 5.
+5. **The ORCID-hides-the-email case is handled, not special-cased.** A provider that returns no email yields a placeholder address that is not a valid email, cannot be mailed, and leads the user to `confirm-email`; the API still returns a well-formed `UserRead`. Test owner: Tasks 1, 5.
+6. **Registration abuse is bounded.** `/auth/register`, the UI sign-up form and `/auth/request-verify-token` share the limiter; verification is required before login when mail works. Test owner: Task 2.
+7. **Invitation mail does not regress the no-SMTP path.** Without a mailer the share link is still shown; with one, the mail carries it and the UI does not. Test owner: Task 4.
+8. **Tests stay offline and still fail without the code they test.** No server, no provider, no discovery request. Test owner: Tasks 1, 5.
 
 ---
 
 ## File map
 
 | File | Responsibility |
-| --- | --- |
-| `src/cocat/app/mail.py` | `Mailer` protocol, `Mail` (SMTP + `from_env`), message templates, `MailError` |
-| `src/cocat/app/accounts.py` | Verification and reset link building, `start_verification`, placeholder email rules |
-| `src/cocat/app/oauth.py` | `OAuthProviderConfig`, `providers_from_env`, `build_client`, `TrustedEmailClient`, `make_oauth_router`, `placeholder_email` |
-| `src/cocat/app/users.py` | `UserManager` mail hooks, `authenticate` gate, `get_by_oauth_account`, `make_user_manager(..., mail)` |
-| `src/cocat/app/db.py` | `OAuthAccount`, `User.oauth_accounts` |
-| `src/cocat/app/actions.py` | `RoomActions.mail`, `RoomActions.invite` (create + mail) |
-| `src/cocat/app/routes.py` | Invitations POST goes through `RoomActions.invite` |
-| `src/cocat/app/app.py` | `mail`/`oauth` arguments, public register, OAuth routers, `UIContext.mail`/`oauth` |
-| `src/cocat/app/migrations/versions/0003_verify_existing_users.py` | Grandfather existing users as verified |
-| `src/cocat/app/migrations/versions/0004_oauth_account.py` | `oauth_account` table |
-| `src/cocat/cli.py` | `create-user` creates verified users; `serve` builds the mailer from the environment |
-| `src/cocat/ui/token.py` | Fragment token reading shared by every token page |
-| `src/cocat/ui/signup.py` | Sign-up page and `POST /ui/signup` |
-| `src/cocat/ui/verify.py` | Email verification page |
-| `src/cocat/ui/reset.py` | Forgot-password page, `POST /ui/forgot-password`, reset page |
-| `src/cocat/ui/oauth.py` | Browser OAuth login and redirecting callback |
-| `src/cocat/ui/confirm_email.py` | Confirm-an-email page for placeholder accounts |
-| `src/cocat/ui/{__init__,context,layout,login,room,account,invitation}.py` | Registration, context, header hand-off, provider buttons, invite-by-email, confirm-email link |
-| `pyproject.toml` | `oauth` extra, version `0.14.0` |
-| `tests/utils.py` | `RecordingMail`, `mails_to`, fake OAuth client, `ui_mail` support |
-| `tests/conftest.py` | `ui_mail`, `oauth_app` fixtures |
-| `tests/test_mail.py`, `tests/test_accounts.py`, `tests/test_migrations.py` | Task 1 |
-| `tests/test_routes.py`, `tests/test_login_gate.py` | Task 1 |
-| `tests/test_ui_signup.py`, `tests/test_ui_verify.py` | Task 2 |
-| `tests/test_ui_reset.py` | Task 3 |
-| `tests/test_actions.py`, `tests/test_ui_room.py` | Task 4 |
-| `tests/test_oauth.py`, `tests/test_ui_oauth.py` | Task 5 |
-| `tests/test_ui_confirm_email.py` | Task 6 |
-| `docs/usage.md`, `CHANGELOG.md` | Task 7 |
+|---|---|
+| `src/cocat/app/mail.py` | SMTP sender, env configuration, placeholder addresses, the three messages. |
+| `src/cocat/app/accounts.py` | Start a verification, build verification and reset links. |
+| `src/cocat/app/oauth.py` | Provider configuration, `OpenID` clients, the trusted-email wrapper, the API OAuth router. |
+| `src/cocat/app/users.py` | `UserManager` mail hooks, `oauth_callback` trust rules, `Backend.mail`. |
+| `src/cocat/app/app.py` | `mail`/`oauth` arguments, routers, rate limits, public base for redirect URLs. |
+| `src/cocat/app/schemas.py` | `UserRead` accepts a placeholder address. |
+| `src/cocat/ui/token.py` | Fragment scripts and `token_from_text`, shared by three pages. |
+| `src/cocat/ui/signup.py` | Sign-up page and its form post. |
+| `src/cocat/ui/verify.py` | Verification page. |
+| `src/cocat/ui/reset.py` | Forgot-password and reset pages. |
+| `src/cocat/ui/oauth.py` | Browser-side OAuth login and callback. |
+| `src/cocat/ui/confirm_email.py` | Confirm an address (OAuth users, and anyone who wants to change it). |
+| `src/cocat/ui/room.py`, `src/cocat/ui/account.py`, `src/cocat/ui/login.py`, `src/cocat/ui/auth.py` | Invite by email, linked providers, sign-up and reset links, messages. |
+| `src/cocat/app/migrations/versions/0003_verify_existing_users.py`, `0004_oauth_accounts.py` | Grandfather existing users; the `oauth_account` table. |
+| `src/cocat/cli.py`, `pyproject.toml`, `docs/usage.md`, `CHANGELOG.md` | Verified admin users, the extras, the documentation, the release. |
+| `tests/test_mail.py`, `test_accounts.py`, `test_login_gate.py`, `test_oauth.py`, `test_migrations.py` | The sender, the hooks, both gates, provider handling, both migrations. |
+| `tests/test_ui_signup.py`, `test_ui_verify.py`, `test_ui_reset.py`, `test_ui_invitation.py`, `test_ui_oauth.py`, `test_ui_confirm_email.py`, `test_ui_account.py` | The pages. |
+| `tests/utils.py`, `tests/conftest.py` | `RecordingMail`, `FakeOAuthClient`, the `ui_mail` fixture. |
 
 ---
 
-### Task 1: Email sender, verification and the login gate
+### Task 1: Email sender, verification and the verification gate
 
 **Files:**
 - Create: `src/cocat/app/mail.py`, `src/cocat/app/accounts.py`, `src/cocat/app/migrations/versions/0003_verify_existing_users.py`, `tests/test_mail.py`, `tests/test_accounts.py`, `tests/test_login_gate.py`
-- Modify: `src/cocat/app/users.py`, `src/cocat/app/app.py`, `src/cocat/cli.py`, `tests/conftest.py`, `tests/utils.py`, `tests/test_migrations.py`
+- Modify: `src/cocat/app/users.py`, `src/cocat/app/app.py`, `src/cocat/app/schemas.py`, `src/cocat/cli.py`, `tests/test_migrations.py`, `tests/utils.py`, `tests/conftest.py`, `pyproject.toml`
 
 **Interfaces:**
-- `class MailError(Exception)` — raised for a refused recipient or an SMTP failure.
+- `class MailError(Exception)`.
+- `PLACEHOLDER_DOMAIN = "placeholder.cocat.org"`; `def is_placeholder(email: str) -> bool` compares the domain, case-insensitively.
 - `class Mailer(Protocol)`: `async def send(self, to: str, subject: str, body: str) -> None`.
-- `@dataclass(frozen=True) class Mail:` fields `host: str`, `sender: str`, `port: int = 587`, `username: str | None = None`, `password: str | None = field(default=None, repr=False)`, `starttls: bool = True`. `@classmethod def from_env(cls, environ: Mapping[str, str] = os.environ) -> Mail | None` reads `COCAT_SMTP_HOST`, `COCAT_SMTP_PORT`, `COCAT_SMTP_USERNAME`, `COCAT_SMTP_PASSWORD`, `COCAT_SMTP_STARTTLS`, `COCAT_MAIL_FROM`; returns `None` when `COCAT_SMTP_HOST` is unset, raises `ValueError("COCAT_MAIL_FROM is required when COCAT_SMTP_HOST is set")` when the sender is missing, and treats `COCAT_SMTP_STARTTLS` as off only for `0`/`false`/`no` (case-insensitive).
-- `Mail.send`: refuses recipients ending in `.invalid` with `MailError("Cannot send mail to a placeholder address")` before touching SMTP, builds an `EmailMessage` (`From`, `To`, `Subject`, `set_content`), and runs the blocking part with `anyio.to_thread.run_sync`; an `smtplib.SMTPException` or `OSError` becomes `MailError(str(error))` with no token and no credentials in the message. `_deliver(message)`: `smtplib.SMTP(host, port)` as a context manager, `starttls()` when `starttls`, `login(username, password)` when `username`, `send_message(message)`.
-- `def verification_mail(link: str) -> tuple[str, str]` returning `(subject, body)`; the body states the link expires in an hour and quotes it on its own line.
-- `async def start_verification(manager: UserManager, user: User, request: Request, mail: Mailer | None) -> None` — with `mail is None`, `await manager.update(UserUpdate(is_verified=True), user)`; otherwise `await manager.request_verify(user, request)` (which calls `on_after_request_verify`).
-- `def verification_link(request: Request, token: str) -> str` — `absolute_url(request, f"/verify#{token}")` (fragment only).
-- `UserManager.__init__(user_db, mail: Mailer | None = None)`; `authenticate(credentials)` returns `None` when `self.mail is not None and user is not None and not user.is_verified`, otherwise delegates to `super().authenticate` (the docstring says an unverified account exists but may not sign in until it proves the address, and that the gate is open when no mail can be sent).
-- `UserManager.on_after_request_verify(user, token, request)`: when `self.mail` is set, `await self.mail.send(user.email, *verification_mail(verification_link(request, token)))`; nothing else (no printing of the token; the user id stays as today's log-free stand-in is removed).
-- `make_user_manager(user_db, secret, mail: Mailer | None = None)`; `get_backend(db, secret, mail)`; `@dataclass Backend` gains `mail: Mailer | None`.
-- `CocatApp(update_dir, db_path="./test.db", *, mail: Mailer | None = None, oauth: ... | None = None)`; `cli._serve` passes `Mail.from_env()` so the environment is read in exactly one place.
-- Migration `0003`: `upgrade` runs `op.execute('UPDATE "user" SET is_verified = 1')`, `downgrade` is a no-op with a comment saying the previous verification state cannot be recovered.
-- `cli._create_user` creates the user with `is_verified=True` (an administrator vouches for the address).
+- `@dataclass(frozen=True) class Mail`: `host: str`, `sender: str`, `port: int = 587`, `username: str | None = None`, `password: str | None = field(default=None, repr=False)`, `starttls: bool = True`.
+  - `Mail.from_env(environ: Mapping[str, str] = os.environ) -> Mail | None`: `None` when `COCAT_SMTP_HOST` is unset or blank; `COCAT_MAIL_FROM` required when a host is set; `COCAT_SMTP_PORT` parsed as an int; `COCAT_SMTP_STARTTLS` read as `{1, true, yes, on}` / `{0, false, no, off}` (case-insensitive, stripped) and `ValueError` for anything else; a username without `COCAT_SMTP_PASSWORD` is a `ValueError` (a half-configured relay). The docstring records that implicit TLS (port 465) is not supported and 587 with STARTTLS is.
+  - `async send(to, subject, body)`: raises `MailError` for a placeholder recipient; builds `EmailMessage`; runs `_deliver` in `anyio.to_thread.run_sync`; `_deliver` uses `smtplib.SMTP(self.host, self.port, timeout=10)`, `starttls()` when configured, `login()` when a username is set, `send_message`; any `OSError` or `smtplib.SMTPException` becomes `MailError`.
+- `verification_mail(link)`, `reset_mail(link)`, `invitation_mail(room_name, inviter, link)`, each `-> tuple[str, str]` (subject, body); bodies name the expiry and say to ignore the message if it was not you.
+- `app/accounts.py`:
+  - `def verification_link(request: Request, token: str) -> str` = `absolute_url(request, f"/verify#{token}")`; `def reset_link(request, token) -> str` = `absolute_url(request, f"/reset-password#{token}")`.
+  - `async def start_verification(manager: UserManager, user: User, request: Request) -> None`: a placeholder address is left alone; with `manager.mail is None` it marks the user verified through `manager.update(UserUpdate(is_verified=True), user)`; otherwise `manager.request_verify(user, request)`.
+- `UserManager(mail: Mailer | None = None)` with `self.mail`; `async verify_account(user, request) -> None` (skip when already verified or the address is a placeholder, else `await manager.update(UserUpdate(is_verified=True), user)` when no mailer else `request_verify`); `on_after_register` creates the personal room then calls `verify_account`; `on_after_request_verify(user, token, request)` mails `verification_mail(verification_link(request, token))` when `self.mail` is set and prints nothing else; `on_after_forgot_password` does the same with `reset_mail`/`reset_link` through `background_tasks.create` (constant reply time); `oauth_callback` override implementing the trust rules of Task 5's finding 3/19 (it applies here because `verify_account` is called by it): when `associate_by_email` and the asserted email is not a placeholder, look the account up with `self.user_db.get_by_email(account_email)` and raise `UserAlreadyExists` unless it `is_verified`; force `is_verified_by_default = is_verified_by_default and not is_placeholder(account_email)`; then `super().oauth_callback(...)`.
+- `make_user_manager(user_db, secret, mail=None)`; `get_backend(db, secret, mail=None)`; `Backend.mail: Mailer | None`.
+- `CocatApp(update_dir, db_path="./test.db", *, mail: Mailer | None = None, oauth: list[tuple[OAuthProviderConfig, Any]] | None = None)`; `_serve` passes `mail=Mail.from_env()`.
+- `schemas.UserRead` overrides `email: str` (a placeholder is not a valid `EmailStr`); `UserCreate`/`UserUpdate` keep `EmailStr`.
+- `app.py`: `fastapi_users.get_auth_router(backend.auth_backend, requires_verification=mail is not None)`; `with_route_dependency(verify_router, "/request-verify-token", check_limit)`.
+- Migration `0003`: `UPDATE "user" SET is_verified = 1`; `downgrade` is a no-op.
+- `cli._create_user` creates verified users (an administrator vouches for the address).
 
-- [ ] **Step 1: Write failing tests.** `tests/test_mail.py`: `from_env` returns `None` without `COCAT_SMTP_HOST`; parses a full environment; defaults to port 587 with STARTTLS on; `COCAT_SMTP_STARTTLS=0` turns it off; a missing `COCAT_MAIL_FROM` raises; `send` on a `.invalid` recipient raises `MailError` without SMTP; `send` through a monkeypatched `smtplib.SMTP` (a fake class recording `starttls`/`login`/`send_message`) checks the delivered `From`/`To`/`Subject`/body, that `starttls` ran, and that `login` runs only with a username; a fake SMTP raising `smtplib.SMTPException` surfaces as `MailError`; `verification_mail` carries the link. `tests/test_accounts.py`: `start_verification` with `mail=None` verifies the user in the database; with a `RecordingMail` it sends exactly one message to the user with a `/verify#` link and leaves `is_verified` false. `tests/test_login_gate.py` (new, `app_client`-based but with a mailer): an unverified user gets 400 from `POST /auth/jwt/login` and `?error=credentials` from `POST /ui/login`, while a verified user logs in on both; with no mailer an unverified user logs in. `tests/test_migrations.py`: a database with an unverified user, migrated to head, has that user verified.
+- [ ] **Step 1: Write the failing tests.** `tests/test_mail.py` (env parsing: nothing set → `None`, host only → `ValueError` for the missing sender, full config, bad port, bad `STARTTLS` word, username without password; `send` through a monkeypatched `smtplib.SMTP` recording host/port/timeout/starttls/login/message; `send` refusing a placeholder; `send` turning an `OSError` into `MailError`; the three templates mention the link and the expiry, `repr(Mail(...))` hides the password). `tests/test_accounts.py` (`start_verification` marks verified with no mailer, requests a verification with one, ignores a placeholder; links are absolute and carry the token after `#`). `tests/test_login_gate.py` (`POST /auth/jwt/login` succeeds for an unverified user with no mailer, 400 `LOGIN_USER_NOT_VERIFIED` with a mailer, 204 after verification). `tests/test_migrations.py` gains a case that runs `make_legacy_db` (unverified rows) → upgrade → `is_verified` all 1. `tests/utils.py` gains `RecordingMail` (`sent: list[tuple[str, str, str]]`, `send` appends, `def mails_to(self, address) -> list[...]`) and `def make_app(update_dir, db_path, *, mail=None)`; `tests/conftest.py` gains `ui_mail` (a `ui` fixture variant whose `CocatApp` gets a `RecordingMail`) and an `app_client_mail` variant. Run them; they fail on the missing modules.
 
-- [ ] **Step 2: Run the new tests.** `export PATH=$PWD/.venv/bin:$PATH; pytest tests/test_mail.py tests/test_accounts.py tests/test_login_gate.py -q`. Expected: FAIL, `ModuleNotFoundError: cocat.app.mail` and, once that exists, `TypeError` for the new `mail` argument.
+- [ ] **Step 2: Run the new tests.** `export PATH=$PWD/.venv/bin:$PATH; pytest tests/test_mail.py tests/test_accounts.py tests/test_login_gate.py tests/test_migrations.py -q`. Expected: `ModuleNotFoundError` for `cocat.app.mail`, then, once that exists, the `ValueError`/`MailError`/gate assertions failing.
 
-- [ ] **Step 3: Implement.** `RecordingMail` and `mails_to` live in `tests/utils.py` (`@dataclass class RecordingMail: messages: list[tuple[str, str, str]] = field(default_factory=list)` with `async def send(self, to, subject, body)`, plus `def mails_to(mail: RecordingMail, email: str) -> list[tuple[str, str, str]]` filtering by recipient — both used from Task 2 on). Add a `mail`-carrying `app_client` variant to `tests/conftest.py` only if `test_login_gate.py` cannot build its own app: prefer building the `TestClient` in the test module with `clean_nicegui()` and `CocatApp(update_dir, db_path, mail=RecordingMail())`.
+- [ ] **Step 3: Implement** `app/mail.py`, `app/accounts.py`, migration 0003, and the `users.py`/`app.py`/`schemas.py`/`cli.py` changes above.
 
-- [ ] **Step 4: Run the new tests, then the full suite** (all pass, coverage 100 %).
+- [ ] **Step 4: Run the new tests and the full suite.** `coverage run -m pytest tests -q && coverage report --fail-under=100 && ruff check src tests && ruff format --check src tests && mypy src tests`. Expected: PASS, 100 %.
 
-- [ ] **Step 5: Commit** `git commit -m "Add the email sender and account verification"` (stage the explicit paths above).
+- [ ] **Step 5: Commit.** `git add pyproject.toml src/cocat/app/mail.py src/cocat/app/accounts.py src/cocat/app/migrations/versions/0003_verify_existing_users.py src/cocat/app/users.py src/cocat/app/app.py src/cocat/app/schemas.py src/cocat/cli.py tests/test_mail.py tests/test_accounts.py tests/test_login_gate.py tests/test_migrations.py tests/utils.py tests/conftest.py && git commit -m "Add the email sender and account verification"`
 
 ---
 
@@ -114,143 +105,142 @@
 
 **Files:**
 - Create: `src/cocat/ui/token.py`, `src/cocat/ui/signup.py`, `src/cocat/ui/verify.py`, `tests/test_ui_signup.py`, `tests/test_ui_verify.py`
-- Modify: `src/cocat/ui/invitation.py`, `src/cocat/ui/login.py`, `src/cocat/ui/__init__.py`, `src/cocat/ui/layout.py`, `src/cocat/app/app.py`, `src/cocat/app/users.py`, `tests/conftest.py`
+- Modify: `src/cocat/ui/__init__.py`, `src/cocat/ui/invitation.py`, `src/cocat/ui/auth.py`, `src/cocat/ui/login.py`, `src/cocat/ui/layout.py`, `src/cocat/app/app.py`, `tests/test_ui_mount.py`, `tests/test_prefix.py`
 
 **Interfaces:**
-- `ui/token.py`: `FRAGMENT_SCRIPT`, `CLEAR_FRAGMENT_SCRIPT`, `async read_fragment_token() -> str`, `def token_from_text(text: str) -> str` — moved unchanged out of `ui/invitation.py`, which imports them from here (docstring keeps the "a token in a path or query ends up in access logs" rationale).
-- `layout.hand_off(target: str) -> RedirectResponse` — `context.client.delete()` then `RedirectResponse(target, status_code=303)`; the one way a page leaves while a client exists (the sign-up page uses it after auto-login; `require_user` keeps its own delete-then-307).
-- `ui/signup.py`: `register(ctx)` adds `@ui.page("/signup")` and `POST /ui/signup` (plain route on the host app, before the mount, like `/ui/login`). `signup_form(action, error)` renders escaped email/password inputs marked `signup-email`, `signup-password` and a `Create account` button; `MESSAGES` gains `taken: "That email is already registered."` and reuses `too_many`. The route: `same_site` → `ctx.check_limit` (429 → `?error=too_many`) → `manager.create(UserCreate(email=..., password=...))` catching `UserAlreadyExists` (→ `?error=taken`) → `start_verification(...)` → with `ctx.mail is None` the account is already verified, so log in with the same cookie machinery `auth.post_login` uses and `hand_off(ui_url(request, "/rooms"))`; with a mailer, `hand_off(ui_url(request, "/login") + "?created=1")`.
-- `ui/login.py`: the login page gains `Sign up` (marker `nav-signup`) and shows `Check your inbox to verify your address.` when `?created=1` (`MESSAGES["created"]`).
-- `ui/verify.py`: `@ui.page("/verify")`, `require_user`-style guard is **not** used (the link may be opened signed out) — read the fragment with `read_fragment_token`, clear it, show the result of `manager.verify(token, request)` in a `@ui.refreshable` (`This address is verified.`, `This verification link is not valid anymore.`, `This address is already verified.`), and a link to the login page when signed out.
-- `app/app.py`: the register router loses `dependencies=[Depends(current_superuser)]` and gains the limiter via `with_route_dependency(register_router, "/register", check_limit)`.
-- `UserManager.on_after_register` keeps creating the personal room; it no longer prints the user id (the id is still available to operators through `cocat get-user`).
+- `ui/token.py`: `FRAGMENT_SCRIPT`, `CLEAR_FRAGMENT_SCRIPT`, `async read_fragment_token() -> str` (empty string on `TimeoutError`), `def token_from_text(text: str) -> str` — moved out of `ui/invitation.py`, which imports them.
+- `ui/signup.py` `register(ctx)`: `@ui.page("/signup")` renders `Sign up` plus the raw form `POST <ui_url(request, "/signup")>` with `signup-email` / `signup-password` inputs and a `signup-submit` button; `POST /ui/signup` (`make_signup_route(ctx)`, registered before the mount) checks `same_site`, then `ctx.check_limit(request)` (429 → 303 `?error=too_many`), then `manager.create(UserCreate(email=..., password=...))`, catching `UserAlreadyExists` → 303 `?error=exists`; on success `start_verification` and then either `303` to the login page with `?created=1` (mailer configured, possibly with `?error=mail` when `MailError`) or an auto-login cookie plus `303` to `/ui/rooms`.
+- `POST /ui/login` gains the verification gate: after `authenticate`, `if ctx.mail is not None and not user.is_verified: redirect ?error=unverified`.
+- `ui/auth.py`: `MESSAGES` gains `exists: "That email is already registered."`, `unverified: "Check your inbox: this account is not verified yet."`, `created: "Account created. Check your inbox to verify it."`, `reset: "Password changed. Sign in with the new one."`, `sent: "If that address has an account, a reset link is on its way."`, `mail: "We could not send the email. Ask an administrator."`; `login_form` ends with `ui.link`-style anchors `Sign up` (`/ui/signup`) and `Forgot your password?` (`/ui/forgot-password`) instead of "Accounts are created by an administrator."
+- `ui/verify.py` `register(ctx)`: `@ui.page("/verify")` reads the fragment token, clears the fragment, and with `perform`-like session resolve calls `manager.verify(token, request)`; outcomes: success → `Your address is verified` + link to My rooms; `UserAlreadyVerified` → `Your address is already verified`; `InvalidVerifyToken` → `This verification link is not valid anymore`.
+- `app.py`: the register router loses `dependencies=[Depends(current_superuser)]` and gains `with_route_dependency(register_router, "/register", check_limit)`.
+- `layout.py`: `MESSAGES`-driven `?error=` rendering already exists through `error_key`.
 
-- [ ] **Step 1: Write failing tests.** `tests/test_ui_signup.py`: sign-up with no mailer creates the account, logs the visitor in and lands on `/ui/rooms` (a room list marker is visible, the cookie is set); with a `ui_mail` fixture the visitor stays signed out, is sent one message to their address whose body contains `/verify#`, and `/ui/login?created=1` shows the inbox message; a duplicate email shows `That email is already registered.`; the eleventh attempt within a minute gets `?error=too_many`; a foreign `Origin` gets 403; a `.invalid`-style address is refused by the mailer (no crash, the account still exists unverified) — assert on the notification, never on a token. `tests/test_ui_verify.py`: a signed-in user opening `/ui/verify` with a `javascript_rules` token (regex anchored at `window\.location\.hash`) sees `This address is verified.` and can then log in by password; an invalid token shows the not-valid message; a second visit with the same token shows the already-verified message. Also assert the REST `POST /auth/register` is now open (no superuser cookie) and rate limited.
+- [ ] **Step 1: Write the failing tests.** `tests/test_ui_signup.py` (page renders the form and both links; a form post creates the user, sets no cookie and redirects `?created=1` when a mailer is configured, and sends exactly one verification mail whose body contains `/ui/verify#`; with no mailer the post auto-logs in and lands on `/ui/rooms`; a duplicate email gives `?error=exists`; a limiter already exhausted gives `?error=too_many` by calling `ctx.check_limit` in a loop first; a mailer that raises gives `?error=mail` and still creates the account). `tests/test_ui_verify.py` (a good token verifies and the user can then log in; a token for an already-verified user says so; a bad token says it is not valid; the token never appears in `user.notify.messages`). `tests/test_ui_mount.py` (the login page links to sign-up and reset). `tests/test_prefix.py` (the login form action is `/cocat/ui/login` under the prefix, and the sign-up link too).
 
-- [ ] **Step 2: Run them.** `pytest tests/test_ui_signup.py tests/test_ui_verify.py -q`. Expected: FAIL (404 on `/ui/signup`, `ImportError` for `cocat.ui.token`).
+- [ ] **Step 2: Run the new tests.** `pytest tests/test_ui_signup.py tests/test_ui_verify.py -q`. Expected: 404 from `user.open("/ui/signup")` (no such page yet).
 
-- [ ] **Step 3: Implement** the modules, register them in `register_pages`, and move the fragment helpers.
+- [ ] **Step 3: Implement** `ui/token.py`, `ui/signup.py`, `ui/verify.py`, the `auth.py`/`login.py`/`__init__.py`/`invitation.py` edits and the public register router.
 
-- [ ] **Step 4: Run the new tests, then the full suite** (all pass, coverage 100 %).
+- [ ] **Step 4: Run the full gate.** Expected: PASS, 100 %.
 
-- [ ] **Step 5: Commit** `git commit -m "Add sign-up and email verification pages"`.
+- [ ] **Step 5: Commit.** `git add src/cocat/ui/token.py src/cocat/ui/signup.py src/cocat/ui/verify.py src/cocat/ui/__init__.py src/cocat/ui/invitation.py src/cocat/ui/auth.py src/cocat/ui/login.py src/cocat/ui/layout.py src/cocat/app/app.py tests/test_ui_signup.py tests/test_ui_verify.py tests/test_ui_mount.py tests/test_prefix.py && git commit -m "Add sign-up and email verification pages"`
 
 ---
 
-### Task 3: Password reset pages
+### Task 3: Forgot-password and reset pages
 
 **Files:**
 - Create: `src/cocat/ui/reset.py`, `tests/test_ui_reset.py`
-- Modify: `src/cocat/ui/login.py`, `src/cocat/ui/__init__.py`, `src/cocat/app/mail.py`, `src/cocat/app/accounts.py`, `src/cocat/app/users.py`
+- Modify: `src/cocat/ui/__init__.py`, `src/cocat/ui/auth.py`, `src/cocat/ui/login.py`
 
 **Interfaces:**
-- `mail.reset_mail(link) -> tuple[str, str]`; `accounts.reset_link(request, token) -> str` = `absolute_url(request, f"/reset-password#{token}")`.
-- `UserManager.on_after_forgot_password(user, token, request)` sends `reset_mail(reset_link(request, token))` when a mailer is configured and does nothing otherwise (the UI explains the no-SMTP case).
-- `ui/reset.py`: `@ui.page("/forgot-password")` with an `email` input (`forgot-email`) and `Send reset link` (`forgot-send`), posting to `POST /ui/forgot-password`; the route is rate limited and always redirects to `/forgot-password?sent=1`, whether or not the address exists (no account enumeration), calling `manager.forgot_password(user, request)` only for a known, verified lookup.
-- `@ui.page("/reset-password")`: reads the fragment with `read_fragment_token`, clears it, renders two password inputs (`reset-password`, `reset-repeat`) plus `Change password` (`reset-submit`), and calls `manager.reset_password(token, password, request)` directly; `InvalidResetPasswordToken` → `This reset link is not valid anymore.`, success → `hand_off(ui_url(request, "/login") + "?reset=1")`, and the login page shows `Your password changed. Sign in again.` for that flag. Mismatched repeats are refused in-page before the manager call.
-- The reset link is never in a path or a query; the stock `POST /auth/reset-password` (`{token, password}`) stays the API twin.
+- `@ui.page("/forgot-password")` renders `Forgot password` plus the form `POST <ui_url(request, "/forgot-password")>` with one `forgot-email` input and a `forgot-submit` button, and shows `MESSAGES[error]`/`MESSAGES["sent"]`.
+- `POST /ui/forgot-password`: `same_site`, `ctx.check_limit` (429 → `?error=too_many`), then `manager.forgot_password(user, request)` when an active user has that address, and **always** `303` to `?sent=1` — the reply must not reveal whether the account exists, and a `MailError` is swallowed (the mail is sent from a background task anyway).
+- `@ui.page("/reset-password")` reads the fragment token, clears it, renders `new-password` / `repeat-password` inputs and a `reset-submit` button; a mismatch notifies `The new passwords differ`; a submit calls `manager.reset_password(token, password, request)`; `InvalidResetPasswordToken` → `This reset link is not valid anymore`; `UserInactive` → the same; success → `redirect_page(ui_url(request, "/login") + "?reset=1", 303)`.
+- `login.py` renders `MESSAGES[reset]` when `?reset=1`.
 
-- [ ] **Step 1: Write failing tests** (`tests/test_ui_reset.py`, using `ui_mail`): requesting a reset sends one message whose body has `/reset-password#`; the flow end to end — request, extract the token with `token_from_text` from the recorded body, open `/ui/reset-password` with that token through `javascript_rules`, submit a new password, land on the login page, and log in with the new password (the old one no longer works); an unknown address sends nothing and still shows `?sent=1`; a mismatched repeat changes nothing; an invalid token shows the not-valid message; the route is rate limited; a foreign `Origin` is refused.
+- [ ] **Step 1: Write the failing tests.** `tests/test_ui_reset.py`: an unknown address still redirects `?sent=1` and sends no mail; a known address sends one mail whose body holds `/ui/reset-password#<token>`; a mailer that raises still redirects `?sent=1`; the whole flow end to end (request the link, `token_from_text(body)`, open the reset page with the token answered by `user.javascript_rules`, submit, then `POST /ui/login` with the new password succeeds and the old one fails); a bad token reports the link is not valid; a mismatched repeat notifies and changes nothing; the rate limit reports `too_many`.
 
-- [ ] **Step 2: Run them.** `pytest tests/test_ui_reset.py -q`. Expected: FAIL (404, no reset mail).
+- [ ] **Step 2: Run the new tests.** Expected: 404 on `/ui/forgot-password`.
 
-- [ ] **Step 3: Implement** and register the pages.
+- [ ] **Step 3: Implement** `ui/reset.py` and the `auth.py`/`login.py` `reset`/`sent` messages.
 
-- [ ] **Step 4: Run the new tests, then the full suite** (all pass, coverage 100 %).
+- [ ] **Step 4: Run the full gate.** Expected: PASS, 100 %.
 
-- [ ] **Step 5: Commit** `git commit -m "Add the password reset pages"`.
+- [ ] **Step 5: Commit.** `git add src/cocat/ui/reset.py src/cocat/ui/__init__.py src/cocat/ui/auth.py src/cocat/ui/login.py tests/test_ui_reset.py && git commit -m "Add the password reset pages"`
 
 ---
 
-### Task 4: Invitation emails
+### Task 4: Email room invitations
 
 **Files:**
-- Modify: `src/cocat/app/actions.py`, `src/cocat/app/routes.py`, `src/cocat/app/mail.py`, `src/cocat/app/accounts.py`, `src/cocat/ui/room.py`, `tests/test_actions.py`, `tests/test_ui_room.py`, `tests/test_routes.py`
+- Create: none
+- Modify: `src/cocat/app/actions.py`, `src/cocat/app/routes.py`, `src/cocat/ui/context.py`, `src/cocat/ui/room.py`, `src/cocat/app/mail.py`, `tests/test_actions.py`, `tests/test_routes.py`, `tests/test_ui_room.py`
 
 **Interfaces:**
-- `mail.invitation_mail(room_name: str, inviter: str, link: str) -> tuple[str, str]`.
-- `@dataclass(frozen=True) RoomActions:` gains `mail: Mailer | None = None` and `async invite(session, room_id, actor, role, email, request) -> tuple[Invitation, str]` — `create_invitation(...)` then, when `self.mail` is set, `await self.mail.send(email, *invitation_mail(room.name, actor.email, absolute_url(request, f"/invitation#{token}")))`. Errors from the mailer are turned into a `RoomError("The invitation is created but the email could not be sent")` so the UI can say so while the invitation still exists.
-- `make_api_router` builds `RoomActions(connections, update_dir, mail)`; the invitations `POST` route calls `actions.invite(...)` when the body has an `email`, and keeps returning the link in `InvitationCreated{id, token}` as today.
-- `ui/room.py`: the owner's invitations block gains an `Invite by email` input (`invite-email`) and `Send invitation` button (`invite-send`) inside the same refreshable; on success it notifies `Invitation sent to <email>`, and when `ctx.mail is None` it fills the share-link input with the created link instead (the copy-by-hand path from phase 2 keeps working).
+- `RoomActions(connections, update_dir, mail: Mailer | None = None)`; `async invite(self, session, room_id, actor, role, email: str, request: Request) -> tuple[Invitation, str]`: `create_invitation(...)` then, when `self.mail` is set, `self.mail.send(email, *invitation_mail(room_name, actor.email, absolute_url(request, f"/invitation#{token}")))` — a `MailError` becomes `RoomError("The invitation was created but the email could not be sent")`. Without a mailer the raw token is returned so the UI can show the link.
+- `make_api_router` builds `RoomActions(connections, update_dir, mail)` and its `POST /rooms/{room_id}/invitations` route calls `actions.invite(...)` when an email is given, returning `InvitationCreated(id, token)` only when no mailer is configured (`token=""` otherwise).
 
-- [ ] **Step 1: Write failing tests.** `tests/test_actions.py`: `invite` with a `RecordingMail` sends one message to the address with the room name and a `/invitation#` link, and creates the invitation; without a mailer it sends nothing and still returns the token; a mailer raising `MailError` surfaces as `RoomError` while the invitation exists. `tests/test_ui_room.py`: an owner sending an invitation to an address sees `Invitation sent to <address>` and the invitation row appears; with a mailer configured the raw token does not appear in any notification; with no mailer the share-link input is filled instead. `tests/test_routes.py`: `POST /api/rooms/{id}/invitations` with an `email` sends a mail through the injected mailer.
+Hmm — `make_api_router` needs the mailer; pass it from `CocatApp`. `ui/context.py`'s `UIContext.actions` already carries it.
+- `ui/room.py`: an owner-only row with `invite-email` (`ui.input`) and `invite-send` (`ui.button("Send invitation")`); the handler calls `perform(ctx, lambda session, actor: ctx.actions.invite(session, room_id, actor, Role.editor, address, context.client.request))`, notifies `Invitation sent to <address>` when mailed, `Invitation created` and fills the share-link input with the returned link when not.
 
-- [ ] **Step 2: Run them.** `pytest tests/test_actions.py tests/test_ui_room.py tests/test_routes.py -q`. Expected: FAIL (`TypeError` on the new `invite` signature / missing marker).
+- [ ] **Step 1: Write the failing tests.** `tests/test_actions.py`: `invite` with no mailer returns the token and sends nothing; with a `RecordingMail` it sends one mail to the address containing `/ui/invitation#` and no link is returned; with a mailer that raises it raises `RoomError` and the invitation still exists. `tests/test_routes.py`: `POST /api/rooms/{id}/invitations` with an email and a mailer sends the mail and returns an empty token; without a mailer it returns the token. `tests/test_ui_room.py`: the invite row is owner-only; sending with a mailer notifies `Invitation sent to guest@example.org` and puts no link in the share-link input; without a mailer the link appears.
 
-- [ ] **Step 3: Implement.**
+- [ ] **Step 2: Run the new tests.** Expected: `TypeError` for the missing `invite`/`mail` arguments.
 
-- [ ] **Step 4: Run the new tests, then the full suite** (all pass, coverage 100 %).
+- [ ] **Step 3: Implement** the `actions.py`, `routes.py`, `app.py`, `ui/room.py` changes.
 
-- [ ] **Step 5: Commit** `git commit -m "Email room invitations"`.
+- [ ] **Step 4: Run the full gate.** Expected: PASS, 100 %.
+
+- [ ] **Step 5: Commit.** `git add src/cocat/app/actions.py src/cocat/app/routes.py src/cocat/app/app.py src/cocat/ui/room.py tests/test_actions.py tests/test_routes.py tests/test_ui_room.py && git commit -m "Email room invitations"`
 
 ---
 
-### Task 5: ORCID login
+### Task 5: ORCID login and email confirmation
 
 **Files:**
-- Create: `src/cocat/app/oauth.py`, `src/cocat/ui/oauth.py`, `src/cocat/app/migrations/versions/0004_oauth_account.py`, `tests/test_oauth.py`, `tests/test_ui_oauth.py`
-- Modify: `src/cocat/app/db.py`, `src/cocat/app/users.py`, `src/cocat/app/app.py`, `src/cocat/ui/context.py`, `src/cocat/ui/login.py`, `src/cocat/ui/__init__.py`, `tests/conftest.py`, `tests/utils.py`, `pyproject.toml`
+- Create: `src/cocat/app/oauth.py`, `src/cocat/ui/oauth.py`, `src/cocat/ui/confirm_email.py`, `src/cocat/app/migrations/versions/0004_oauth_accounts.py`, `tests/test_oauth.py`, `tests/test_ui_oauth.py`, `tests/test_ui_confirm_email.py`
+- Modify: `src/cocat/app/db.py`, `src/cocat/app/users.py`, `src/cocat/app/app.py`, `src/cocat/ui/__init__.py`, `src/cocat/ui/login.py`, `src/cocat/ui/account.py`, `src/cocat/app/mail.py`, `pyproject.toml`, `tests/utils.py`, `tests/conftest.py`, `tests/test_migrations.py`, `tests/test_api.py`
 
 **Interfaces:**
-- `app/db.py`: `class OAuthAccount(SQLAlchemyBaseOAuthAccountTableUUID, Base)` (table `oauth_account`), `User.oauth_accounts: Mapped[list[OAuthAccount]] = relationship(lazy="joined", cascade="all, delete-orphan")`; `make_user_manager` passes `oauth_account_table=OAuthAccount` to `SQLAlchemyUserDatabase`; `UserManager.get_by_oauth_account(oauth_name, account_id)` returns the user or raises `UserNotExists`.
-- Migration `0004` creates `oauth_account` (columns as the mixin defines them) with the `user_id` foreign key and its index; `downgrade` drops it.
-- `app/oauth.py`: `class OAuthProviderConfig(BaseModel)` — `name: str`, `discovery_url: str` (aliased `discovery_url`), `client_id: str`, `client_secret: SecretStr`, `verifies_email: bool = False`, `scopes: list[str] | None = None`; `providers_from_env(environ=os.environ) -> list[OAuthProviderConfig]` parses `COCAT_OAUTH_PROVIDERS` as a JSON list (empty/unset → `[]`; invalid JSON or a missing field raises `ValueError` naming the variable); `build_client(config) -> OpenID` (`openid_configuration_endpoint=config.discovery_url`, `name=config.name`, `base_scopes=config.scopes`); `class TrustedEmailClient` wrapping any client with `name`, `async get_authorization_url`, `async get_access_token`, `async get_id_email(token) -> tuple[str, str]` — returns `(account_id, email)` when `config.verifies_email` and `email` is not `None`, otherwise `(account_id, placeholder_email(config.name, account_id))` (docstring: an unverified asserted address must never reach an account, so it is replaced by a placeholder the user later confirms); `placeholder_email(provider, account_id) -> str` = `f"{account_id}@{provider}.invalid"`; `is_placeholder(email) -> bool` = `email.endswith(".invalid")`; `make_oauth_router(clients, backend, get_user_manager, secret)` gives one router per provider via `get_oauth_router(client, backend, get_user_manager, secret, redirect_url=f"{public}/auth/{name}/callback", associate_by_email=config.verifies_email, is_verified_by_default=config.verifies_email)` (stock routes, so `/auth/{name}/authorize` and `/auth/{name}/callback` stay the API twin); `build_clients(providers) -> list[tuple[OAuthProviderConfig, TrustedEmailClient]]`; building any client requires `COCAT_PUBLIC_URL` (a redirect URI that differs from what is registered at the provider silently fails).
-- `ui/oauth.py`: `register(ctx)` adds `GET /ui/oauth/{name}/login` and `GET /ui/oauth/{name}/callback` on the host app before the mount. Login: look the client up by name (404 when unknown), `csrf = generate_csrf_token()`, `state = generate_state_token({CSRF_TOKEN_KEY: csrf}, ctx.backend.secret)`, `client.get_authorization_url(absolute_url(request, f"/oauth/{name}/callback"), state, config.scopes)`, set the CSRF cookie with the same flags fastapi-users uses, 307 to the provider. Callback: `OAuth2AuthorizeCallback(client, redirect_url=absolute_url(request, f"/oauth/{name}/callback"))` as a dependency, `decode_jwt(state, secret, [STATE_TOKEN_AUDIENCE])`, `secrets.compare_digest` against the CSRF cookie, `manager.oauth_callback(name, token["access_token"], account_id, email, expires_at, refresh_token, request, associate_by_email=config.verifies_email, is_verified_by_default=config.verifies_email)`, then the login cookie via `with_cookies` and 303 to `/ui/rooms`, or to `/ui/confirm-email` when the account email is a placeholder; `UserAlreadyExists` → 303 `/ui/login?error=exists`; a bad state or CSRF → 400. `login.py` renders one button per provider (marker `oauth-<name>`) linking to that login route.
-- `UIContext` gains `mail: Mailer | None` and `providers: list[tuple[OAuthProviderConfig, TrustedEmailClient]]`; `CocatApp` builds them once and passes them to both `mount_ui` and the API routers.
-- `pyproject.toml`: `fastapi-users[sqlalchemy,oauth]`.
+- `db.py`: `class OAuthAccount(SQLAlchemyBaseOAuthAccountTableUUID, Base)` with `__tablename__ = "oauth_account"` and a `UniqueConstraint("oauth_name", "account_id")`; `User.oauth_accounts: Mapped[list[OAuthAccount]] = relationship(back_populates="user", lazy="joined", cascade="all, delete-orphan")`; `SQLAlchemyUserDatabase(session, User, OAuthAccount)` wherever a user database is built (`users.user_manager`, `Backend.user_manager`, `make_user_manager`).
+- Migration `0004`: `oauth_account` with `id`/`user_id` as `sa.CHAR(36)`, FK `ondelete="cascade"`, `oauth_name`/`account_id` strings, `access_token`/`refresh_token` `VARCHAR(1024)`, `expires_at` integer, `account_email` `VARCHAR(320)`, the unique constraint, and indexes on `oauth_name` and `account_id`.
+- `app/oauth.py`:
+  - `class OAuthProviderConfig(BaseModel)`: `name: str` (`^[a-z0-9_-]{1,32}$`), `discovery_url: str`, `client_id: str`, `client_secret: SecretStr`, `verifies_email: bool = False`, `scopes: list[str] = ["openid"]`.
+  - `def providers_from_env(environ: Mapping[str, str] = os.environ) -> list[OAuthProviderConfig]`: empty when `COCAT_OAUTH_PROVIDERS` is unset; a JSON list of objects otherwise; `ValueError` for bad JSON, a non-list, or a missing field (pydantic's message is enough).
+  - `def build_client(config: OAuthProviderConfig, factory: Callable[..., Any] | None = None) -> Any`: `factory = factory or OpenID` resolved at call time, called as `factory(client_id=..., client_secret=..., openid_configuration_endpoint=config.discovery_url, name=config.name, base_scopes=config.scopes)`.
+  - `def build_clients(configs, ...) -> dict[str, Any]`: skips a provider whose construction raises `OpenIDConfigurationError`, logging one warning with the provider name (never the secret), so a provider outage does not stop the server.
+  - `class TrustedEmailClient`: wraps a client; `__getattr__` forwards; `name`; `async get_id_email(token)` returns the wrapped `(account_id, email)` with the email replaced by `placeholder_email(name, account_id)` when `not verifies_email` or the email is `None`.
+  - `def placeholder_email(provider: str, account_id: str) -> str` = `f"{account_id}@{provider}.{PLACEHOLDER_DOMAIN}"`; `is_placeholder` comes from `app/mail.py`.
+  - `def make_oauth_router(ctx, config, client, redirect_url) -> APIRouter`: `get_oauth_router(client, ctx.backend.auth_backend, ctx.backend.get_user_manager, secret=ctx.backend.secret, redirect_url=redirect_url, associate_by_email=config.verifies_email and ctx.mail is not None, is_verified_by_default=config.verifies_email)`.
+- `app.py`: computes `public_base = os.environ.get("COCAT_PUBLIC_URL", "").rstrip("/") + root_path` once; raises `ValueError` when providers are configured without `COCAT_PUBLIC_URL`; includes one `/auth/{name}` router per provider with `redirect_url=f"{public_base}/auth/{name}/callback"` and one `/ui/oauth/{name}` router from `ui/oauth.py`.
+- `ui/oauth.py`: `GET /ui/oauth/{name}/login` → `generate_csrf_token()` + `generate_state_token({"provider": name}, secret)` + the CSRF cookie (name/path/secure/httponly/samesite copied from fastapi-users' defaults) and a `307` to `client.get_authorization_url(callback_url, state, config.scopes)`; `GET /ui/oauth/{name}/callback?code=&state=` → 400 when either is missing, `decode_jwt(state, secret, [STATE_TOKEN_AUDIENCE])` (bad → 400), `secrets.compare_digest` against the CSRF cookie (missing/mismatched → 400), `client.get_access_token(code, redirect_url=callback_url)` (`GetAccessTokenError` → 400), `manager.oauth_callback(name, token["access_token"], account_id, account_email, associate_by_email=..., is_verified_by_default=...)`, `UserAlreadyExists` → `303 /ui/login?error=exists`, `not user.is_active` → `303 /ui/login?error=credentials`, else the login cookie on a `303` to `/ui/rooms`, or `/ui/confirm-email` when the email is a placeholder.
+- `ui/login.py`: one `oauth-<name>` button per configured provider linking to `ui_url(request, f"/oauth/{name}/login")`.
+- `ui/confirm_email.py`: `@ui.page("/confirm-email")` (guarded), `confirm-email` input, `confirm-email-send` button; refuses an empty or placeholder address (`Enter your email address`); `manager.update(UserUpdate(email=address), user)` catching `UserAlreadyExists` → `That address belongs to an existing account: sign in with it and reset its password if you do not have one` plus a login link; then `start_verification`, and `Your address is confirmed.` (no mailer) or `Check your inbox to verify <address>.`.
+- `ui/account.py`: when `user.oauth_accounts` is non-empty, replaces the password form with `This account signs in with <provider names>.`; always shows `nav-confirm-email` when the address is a placeholder, and a `Confirm your email` link otherwise.
+- `pyproject.toml`: `"fastapi-users[sqlalchemy,oauth] >=15.0.1,<16.0.0"` and `"httpx-oauth >=0.17,<0.18"`.
 
-- [ ] **Step 1: Write failing tests.** `tests/utils.py` gains `@dataclass class FakeOAuthClient` (`name`, `email: str | None`, `async get_authorization_url(redirect_uri, state, scopes=None)` returning `f"https://provider.test/authorize?state={state}"`, `async get_access_token(code, redirect_uri, code_verifier=None)` returning a fixed `{"access_token": "token", "expires_at": ...}`, `async get_id_email(token)` returning `(self.account_id, self.email)`). `tests/test_oauth.py`: `providers_from_env` on empty/unset is `[]`, on a valid JSON list yields the fields, on invalid JSON and on a missing field raises `ValueError`; `placeholder_email`/`is_placeholder`; `TrustedEmailClient.get_id_email` keeps the email for `verifies_email=True` and replaces it otherwise (including the `email is None` case); `make_oauth_router` yields `/authorize` returning the authorization URL plus the CSRF cookie for the fake client. `tests/test_ui_oauth.py` (a fixture building `CocatApp(..., oauth=[(config, FakeOAuthClient(...))])` inside `clean_nicegui`/`ui_simulation`): the login page lists a button per provider; `GET /ui/oauth/orcid/login` answers 307 with `Location` on the provider and sets the CSRF cookie; the callback with the matching state/CSRF sets the login cookie and lands on `/ui/rooms`; a provider with `verifies_email=True` logging in with an existing account's email reaches that same account (no second user); a provider with `verifies_email=False` and the same email creates a placeholder account and lands on `/ui/confirm-email`; the callback without the CSRF cookie answers 400; the second login reuses the stored OAuth account (one user, no duplicate); an account already holding that email under `verifies_email=False` is refused with `?error=exists`.
+- [ ] **Step 1: Write the failing tests.** `tests/test_oauth.py`: `providers_from_env` (unset, one provider with defaults, bad JSON, a missing field → `ValueError`); `build_client` with a monkeypatched `OpenID` asserting the arguments and `base_scopes=["openid"]` (the authorization URL must contain `scope=openid`); `build_clients` skipping a provider whose factory raises `OpenIDConfigurationError`; `TrustedEmailClient` keeping the email when `verifies_email` and substituting a placeholder when it does not or when the email is `None`; `Mail.send` refusing that placeholder; a placeholder account created through `manager.oauth_callback` then `GET /api/me` → 200 with the placeholder string; `associate_by_email` not linking onto an unverified local account (`UserAlreadyExists`) but linking onto a verified one when a mailer is configured; the API OAuth router's `/authorize` returning a URL. `tests/test_ui_oauth.py`: `/ui/oauth/orcid/login` redirects to the provider URL with a CSRF cookie; a bad `state`, a missing CSRF cookie and a `GetAccessTokenError` each 400; a good callback sets the login cookie and redirects to `/ui/rooms`; a placeholder email redirects to `/ui/confirm-email`; a deactivated user is refused; the login page lists the provider button. `tests/test_ui_confirm_email.py`: an OAuth user confirms `user@example.org`, is verified with no mailer, and gets one mail with a mailer; an address owned by somebody else says so and 303s nothing; a placeholder/empty address is refused; the account page links to it only for placeholders. `tests/test_migrations.py`: 0004 creates the table and its constraint. `tests/utils.py`: `@dataclass FakeOAuthClient` (`name`, `email`, `authorization_url`, `token`, `get_authorization_url`, `get_access_token`, `get_id_email`) and `def oauth_provider(name="orcid", **kwargs)`.
 
-- [ ] **Step 2: Run them.** `pytest tests/test_oauth.py tests/test_ui_oauth.py -q`. Expected: FAIL (`ModuleNotFoundError: httpx_oauth`, then `cocat.app.oauth`). Install the extra first (`uv pip install -p .venv -e '.[server]' --group test`) so the failure is the missing module, not the dependency.
+- [ ] **Step 2: Run the new tests.** Expected: `ImportError` for `cocat.app.oauth` and `httpx_oauth` (the extra is not installed yet: `uv pip install -p .venv -e '.[server]'` once `pyproject.toml` is edited).
 
-- [ ] **Step 3: Implement** the model, migration, manager override, `app/oauth.py`, `ui/oauth.py`, the login buttons and the wiring.
+- [ ] **Step 3: Implement** the modules, the migration, the `db.py`/`users.py`/`app.py` wiring, the pages, and the `pyproject.toml` extras.
 
-- [ ] **Step 4: Run the new tests, then the full suite** (all pass, coverage 100 %).
+- [ ] **Step 4: Run the full gate.** Expected: PASS, 100 %.
 
-- [ ] **Step 5: Commit** `git commit -m "Add ORCID login"`.
+- [ ] **Step 5: Commit.** `git add pyproject.toml src/cocat/app/oauth.py src/cocat/ui/oauth.py src/cocat/ui/confirm_email.py src/cocat/app/migrations/versions/0004_oauth_accounts.py src/cocat/app/db.py src/cocat/app/users.py src/cocat/app/app.py src/cocat/app/mail.py src/cocat/ui/__init__.py src/cocat/ui/login.py src/cocat/ui/account.py tests/test_oauth.py tests/test_ui_oauth.py tests/test_ui_confirm_email.py tests/test_migrations.py tests/test_api.py tests/utils.py tests/conftest.py && git commit -m "Add ORCID login and email confirmation"`
 
 ---
 
-### Task 6: Let OAuth users confirm their email
+### Task 6: Docs and release 0.14.0
 
 **Files:**
-- Create: `src/cocat/ui/confirm_email.py`, `tests/test_ui_confirm_email.py`
-- Modify: `src/cocat/ui/account.py`, `src/cocat/ui/__init__.py`, `src/cocat/app/accounts.py`
-
-**Interfaces:**
-- `@ui.page("/confirm-email")` requiring a signed-in user: an `email` input (`confirm-email`) and `Confirm` (`confirm-email-send`). On submit: refuse an empty or `.invalid` address (`Enter an email address`, `That address cannot receive mail`), `await manager.update(UserUpdate(email=address), user)` — fastapi-users resets `is_verified` on an email change — then `start_verification(...)`; with a mailer the page says `Check your inbox to verify <address>.`, without one it verifies immediately and says `Your address is confirmed.`
-- `account.py`: when `is_placeholder(user.email)` the page shows the placeholder as `No email address yet` and a `Confirm your email` link (marker `nav-confirm-email`); otherwise it keeps showing the address.
-
-- [ ] **Step 1: Write failing tests.** A placeholder account (created through `manager.oauth_callback` with a fake client) sees `No email address yet` and the confirm link; confirming a real address with a mailer sends one message and leaves the account unverified until the link is used (open the recorded `/verify#` link through `javascript_rules` and check the account is then verified and can log in by password); confirming without a mailer verifies immediately; a `.invalid` address and an empty one are refused; the account page shows the real address after confirmation.
-
-- [ ] **Step 2: Run them.** `pytest tests/test_ui_confirm_email.py -q`. Expected: FAIL (404, `ImportError` for `is_placeholder`).
-
-- [ ] **Step 3: Implement.**
-
-- [ ] **Step 4: Run the new tests, then the full suite** (all pass, coverage 100 %).
-
-- [ ] **Step 5: Commit** `git commit -m "Let OAuth users confirm their email"`.
-
----
-
-### Task 7: Document email and ORCID login and release 0.14.0
-
-**Files:**
+- Create: none
 - Modify: `docs/usage.md`, `CHANGELOG.md`, `pyproject.toml`
 
-**Interfaces:** none — documentation and the version bump.
+**Interfaces:**
+- `docs/usage.md` gains `### Email`: a table of `COCAT_SMTP_HOST`, `COCAT_SMTP_PORT` (587), `COCAT_SMTP_USERNAME`, `COCAT_SMTP_PASSWORD`, `COCAT_SMTP_STARTTLS`, `COCAT_MAIL_FROM`; that port 465 with implicit TLS is not supported; that with no SMTP the server skips verification and shows the links in the UI; that verification is required to log in when SMTP is configured; that the reset reply is identical for known and unknown addresses; that all unauthenticated forms share the 10-per-minute limiter; and the 10-second SMTP timeout.
+- `### ORCID and other OAuth providers`: the `COCAT_OAUTH_PROVIDERS` JSON shape with a full ORCID example (`https://orcid.org/.well-known/openid-configuration`, `"scopes": ["openid"]`), that ORCID has no federation agreement so the client is registered on orcid.org; the two redirect URIs per provider, `<public>/ui/oauth/<name>/callback` and `<public>/auth/<name>/callback`; that `COCAT_PUBLIC_URL` is required and must match the provider registration; what `verifies_email` means (the operator trusts the provider to have verified the address; the `email_verified` claim is not inspected) and that it only links to an existing verified account when mail is configured; that an address the provider does not supply becomes a placeholder, so the login page sends the user to confirm an email, and ORCID creates a separate account until explicit account linking ships.
+- The old sentences are corrected: the login page now has sign-up and reset links ("accounts are created by an administrator" is gone), and "Four environment variables" becomes the new count.
+- `CHANGELOG.md` gains `## 0.14.0`; `pyproject.toml` `version = "0.14.0"`.
 
-- [ ] **Step 1: Write the docs.** `docs/usage.md`: a `### Email` subsection under `### Web UI` covering the `COCAT_SMTP_*`/`COCAT_MAIL_FROM` variables (table rows: `COCAT_SMTP_HOST`, `COCAT_SMTP_PORT`, `COCAT_SMTP_USERNAME`, `COCAT_SMTP_PASSWORD`, `COCAT_SMTP_STARTTLS`, `COCAT_MAIL_FROM`), the no-SMTP behaviour ("verification is skipped, links are shown in the UI"), what verification means for login once SMTP is on, and the reset flow; a `### ORCID and other OAuth providers` subsection with the `COCAT_OAUTH_PROVIDERS` JSON shape (`[{name, discovery_url, client_id, client_secret, verifies_email, scopes}]`), the note that `COCAT_PUBLIC_URL` must match the redirect URI registered at the provider (`<public>/ui/oauth/<name>/callback` and `<public>/auth/<name>/callback`), that the ORCID client is registered on orcid.org with no federation agreement, and that a provider only links to an existing account by email when `verifies_email` is true — otherwise the user confirms an address after the first login.
-- [ ] **Step 2: CHANGELOG.** `## 0.14.0` listing: SMTP sender from environment variables; open registration with email verification; password reset; invitation emails; ORCID/OAuth login with `verifies_email` linking rules and the confirm-email page; migration `0003` (existing users grandfathered) and `0004` (`oauth_account`); `fastapi-users[sqlalchemy,oauth]` in the server extra.
-- [ ] **Step 3: Version.** `pyproject.toml` `version = "0.14.0"`.
-- [ ] **Step 4: Run the full suite** (docs do not change coverage, but the release must be green).
-- [ ] **Step 5: Commit** `git commit -m "Document email and ORCID login and release 0.14.0"`.
+- [ ] **Step 1: Write the docs** as above, reading the current `docs/usage.md` structure first so the new subsections match the surrounding style.
+
+- [ ] **Step 2: Check the env-var table** lists every variable the code reads (`grep -o "COCAT_[A-Z_]*" src/cocat | sort -u`) and that each documented variable exists in the code.
+
+- [ ] **Step 3: Run the full gate.** Expected: PASS, 100 %.
+
+- [ ] **Step 4: Commit.** `git add docs/usage.md CHANGELOG.md pyproject.toml && git commit -m "Document email and ORCID login and release 0.14.0"`
 
 ---
 
 ## After this plan
 
-- Phase 4 (roles) can now rely on verified accounts: a viewer role and its enforcement are the next slice, and the UI can start offering it.
-- Deferred on purpose, worth tracking: an optional email-domain allow-list (`COCAT_ALLOWED_EMAIL_DOMAINS`) for open registration; explicit "link this ORCID to my account" from the account page (fastapi-users' `get_oauth_associate_router`); per-user quotas (rooms, storage) which the design puts in a later phase.
-- `mkdocs build --strict` cannot run in this worktree until the `docs` dependency group is installed; run it wherever docs are built before publishing.
-- The SMTP path is exercised only against a fake `smtplib.SMTP`; a real deployment should be smoke-tested once with `COCAT_SMTP_HOST` set, since TLS negotiation and server quirks are the part no test can prove.
+- Phase 4 (roles) can now assume every account has a proven address when SMTP is configured, and that `is_verified` means something.
+- Deliberately deferred, each worth its own change:
+  - an email-domain allow-list (`COCAT_ALLOWED_EMAIL_DOMAINS`), the design's optional mitigation for open registration;
+  - explicit "link this ORCID to my account" from the account page (`get_oauth_associate_router`), which is what makes ORCID and password reach the same account in every case;
+  - per-user quotas on rooms and updates (phase 6).
+- The SMTP path is only ever faked in tests. A real deployment should be smoke-tested once with `COCAT_SMTP_HOST` set, and the OAuth flow once against the real ORCID sandbox, because both are network boundaries the suite deliberately does not cross.
+- `mkdocs build --strict` cannot run in this environment (the `docs` dependency group is not installed); run it before merging the documentation.
