@@ -2,7 +2,7 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse
 from nicegui import ui
 
-from .auth import error_key, login_form, next_query
+from .auth import error_key, login_form, next_query, resend_form
 from .context import UIContext
 from .layout import current_user, redirect_page, ui_url
 
@@ -28,6 +28,7 @@ def register(ctx: UIContext) -> None:
                 ui_url(request, "/forgot-password"),
             )
         ).mark("login-form")
+        ui.html(resend_form(ui_url(request, "/request-verify"))).mark("resend-form")
         for name in ctx.providers:
             ui.link(
                 f"Sign in with {name}", ui_url(request, f"/oauth/{name}/login")

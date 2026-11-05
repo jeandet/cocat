@@ -11,7 +11,7 @@ from conftest import (
 )
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-from utils import clean_nicegui
+from utils import RecordingMail, clean_nicegui
 
 from cocat.app.app import CocatApp
 from cocat.app.storage import room_file
@@ -393,3 +393,22 @@ def test_an_invitation_returns_its_token_without_a_mailer(
 
     assert response.status_code == 201
     assert response.json()["token"]
+
+
+def test_a_placeholder_address_cannot_register(app_client: AppClient) -> None:
+    response = app_client.client.post(
+        "/auth/register",
+        json={"email": "orcid-1@orcid.placeholder.cocat.org", "password": "pwd123"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_a_mailer_needs_a_public_url(
+    update_dir: str, db_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("COCAT_PUBLIC_URL", raising=False)
+
+    with clean_nicegui():
+        with pytest.raises(ValueError, match="COCAT_PUBLIC_URL"):
+            CocatApp(update_dir, db_path, mail=RecordingMail())

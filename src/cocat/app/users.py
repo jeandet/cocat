@@ -1,3 +1,4 @@
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Annotated, Any, cast
@@ -14,8 +15,10 @@ from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import DB, OAuthAccount, User
-from .mail import Mailer, is_placeholder, reset_mail, verification_mail
+from .mail import Mailer, MailError, is_placeholder, reset_mail, verification_mail
 from .rooms import create_personal_room, get_role
+
+LOGGER = logging.getLogger(__name__)
 
 
 class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
@@ -34,8 +37,8 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def verify_account(self, user: User, request: Request | None = None) -> None:
         """Ask the user to confirm the address, unless that is already settled.
 
-        Both front ends reach this: the REST register route through
-        `on_after_register`, the UI sign-up page by calling it directly.
+        The REST register route and the UI sign-up page both reach it through
+        `on_after_register`.
         """
         if user.is_verified:
             return
@@ -50,7 +53,10 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             return
         from .accounts import reset_link  # accounts builds on this module
 
-        await self.mail.send(user.email, *reset_mail(reset_link(request, token)))
+        # simplify: sent inline, so a slow relay shows up as a slow response and
+        # the latency still hints whether the address exists (rate limited).
+        # Upgrade: send from a background task once there is a task group here.
+        await self._mail(user, *reset_mail(reset_link(request, token)))
 
     async def on_after_request_verify(
         self, user: User, token: str, request: Request | None = None
@@ -59,9 +65,19 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             return
         from .accounts import verification_link  # accounts builds on this module
 
-        await self.mail.send(
-            user.email, *verification_mail(verification_link(request, token))
-        )
+        await self._mail(user, *verification_mail(verification_link(request, token)))
+
+    async def _mail(self, user: User, subject: str, body: str) -> None:
+        """Best effort: a refused message must not fail the caller's request.
+
+        The REST register, reset and verify routes then answer the same way
+        whether or not the relay is up, so their replies cannot probe accounts.
+        """
+        assert self.mail is not None
+        try:
+            await self.mail.send(user.email, subject, body)
+        except MailError:
+            LOGGER.warning("Could not mail user %s", user.id)
 
     async def oauth_callback(
         self,

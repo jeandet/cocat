@@ -13,7 +13,12 @@
   configured, through both the API and the UI.
 - Email invitations: `RoomActions.invite` creates the invitation and mails the link, and the
   room page has an "Invite by email" row. The API only returns the raw token when no mailer
-  is configured.
+  is configured, and an invitation whose mail bounced is rolled back rather than left behind.
+- `COCAT_PUBLIC_URL` is now required as soon as a mailer is configured, because a mailed link
+  must not be built from the `Host` header; the login page also offers to resend the
+  verification mail, and every route has its own rate-limit budget.
+- Room names containing control characters, and invitation addresses that are not email
+  addresses or are provider placeholders, are refused.
 - ORCID login through `httpx_oauth` OpenID clients listed in `COCAT_OAUTH_PROVIDERS`, in the
   web UI and through the stock fastapi-users OAuth router. An identity is linked by address
   only for providers flagged `verifies_email` and only onto a verified local account.

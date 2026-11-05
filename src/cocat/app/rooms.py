@@ -52,6 +52,8 @@ def _room_name(name: str) -> str:
     stripped = name.strip()
     if not stripped:
         raise RoomError("Enter a room name")
+    if any(character < " " or character == "\x7f" for character in stripped):
+        raise RoomError("Enter a room name without control characters")
     return stripped
 
 

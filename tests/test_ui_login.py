@@ -3,11 +3,14 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 from conftest import UI
-from utils import COOKIE_NAME, set_active
+from utils import COOKIE_NAME, set_active, set_verified
 
 from cocat.ui.auth import login_form, logout_form
 
 pytestmark = pytest.mark.anyio
+
+SIGN_UP = "/ui/signup"
+RESET = "/ui/forgot-password"
 
 
 async def post_login(
@@ -33,7 +36,7 @@ async def logged_in(ui: UI) -> AsyncIterator[UI]:
 
 
 def test_login_form_posts_the_password() -> None:
-    form = login_form("/ui/login?next=%2Fui%2Frooms", None)
+    form = login_form("/ui/login?next=%2Fui%2Frooms", None, SIGN_UP, RESET)
 
     assert 'method="post"' in form
     assert 'action="/ui/login?next=%2Fui%2Frooms"' in form
@@ -47,13 +50,17 @@ def test_login_form_posts_the_password() -> None:
 
 
 def test_login_form_explains_the_failure() -> None:
-    assert "Wrong email or password." in login_form("/ui/login", "credentials")
-    assert "Too many" in login_form("/ui/login", "too_many")
-    assert "Wrong email or password." not in login_form("/ui/login", None)
+    assert "Wrong email or password." in login_form(
+        "/ui/login", "credentials", SIGN_UP, RESET
+    )
+    assert "Too many" in login_form("/ui/login", "too_many", SIGN_UP, RESET)
+    assert "Wrong email or password." not in login_form(
+        "/ui/login", None, SIGN_UP, RESET
+    )
 
 
 def test_login_form_escapes_the_action() -> None:
-    form = login_form('/ui/login?a=<script>&b="', None)
+    form = login_form('/ui/login?a=<script>&b="', None, SIGN_UP, RESET)
 
     assert "<script>" not in form
     assert "&lt;script&gt;" in form
@@ -178,3 +185,67 @@ async def test_logout_without_a_cookie(ui: UI) -> None:
 def anyio_backend() -> str:
     """aiosqlite only runs on asyncio, so these tests cannot use trio."""
     return "asyncio"
+
+
+async def test_the_login_page_offers_a_resend(ui: UI) -> None:
+    await ui.user.open("/ui/login")
+
+    await ui.user.should_see(marker="resend-form", retries=30)
+
+
+async def test_resending_answers_the_same_for_an_unknown_address(ui: UI) -> None:
+    response = await ui.user.http_client.post(
+        "/ui/request-verify",
+        data={"email": "nobody@example.org"},
+        follow_redirects=False,
+    )
+
+    assert str(response.headers["location"]) == "/ui/login?resent=1"
+
+
+async def test_resending_mails_an_unverified_account(ui_mail: UI) -> None:
+    await set_verified(ui_mail.db_path, ui_mail.email, False)
+
+    response = await ui_mail.user.http_client.post(
+        "/ui/request-verify",
+        data={"email": ui_mail.email},
+        follow_redirects=False,
+    )
+
+    assert str(response.headers["location"]) == "/ui/login?resent=1"
+    assert ui_mail.mail is not None
+    assert ui_mail.mail.mails_to(ui_mail.email)
+
+
+async def test_a_flood_of_logins_does_not_block_sign_up(ui: UI) -> None:
+    for _ in range(10):
+        await ui.user.http_client.post(
+            "/ui/login",
+            data={"username": "x@example.org", "password": "nope"},
+            follow_redirects=False,
+        )
+
+    response = await ui.user.http_client.post(
+        "/ui/signup",
+        data={"email": "fresh@example.org", "password": "pwd123"},
+        follow_redirects=False,
+    )
+
+    assert "too_many" not in str(response.headers["location"])
+
+
+async def test_a_flood_of_resends_is_refused(ui: UI) -> None:
+    for _ in range(10):
+        await ui.user.http_client.post(
+            "/ui/request-verify",
+            data={"email": "x@example.org"},
+            follow_redirects=False,
+        )
+
+    response = await ui.user.http_client.post(
+        "/ui/request-verify",
+        data={"email": "x@example.org"},
+        follow_redirects=False,
+    )
+
+    assert "error=too_many" in str(response.headers["location"])

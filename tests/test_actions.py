@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 from conftest import make_orm_user
 from fastapi import Request
@@ -6,7 +8,7 @@ from utils import RecordingMail, connect
 
 from cocat.app.actions import RoomActions
 from cocat.app.connections import Connections
-from cocat.app.db import Role
+from cocat.app.db import Role, utcnow
 from cocat.app.invitations import list_invitations
 from cocat.app.mail import MailError
 from cocat.app.rooms import (
@@ -130,4 +132,56 @@ async def test_invite_reports_a_mailer_that_fails(
             session, room.id, owner, Role.editor, "guest@example.org", make_request()
         )
 
-    assert len(await list_invitations(session, room.id, owner)) == 1
+    assert await list_invitations(session, room.id, owner) == []
+
+
+async def test_invite_refuses_an_address_that_is_not_an_email(
+    session: AsyncSession, update_dir: str
+) -> None:
+    owner = await make_orm_user(session, "owner@example.com")
+    room = await create_room(session, owner, "Lab")
+    actions = RoomActions(Connections(), update_dir)
+
+    with pytest.raises(RoomError, match="valid email address"):
+        await actions.invite(
+            session, room.id, owner, Role.editor, "not-an-address", make_request()
+        )
+
+
+async def test_invite_refuses_a_placeholder_address(
+    session: AsyncSession, update_dir: str
+) -> None:
+    owner = await make_orm_user(session, "owner@example.com")
+    room = await create_room(session, owner, "Lab")
+    actions = RoomActions(Connections(), update_dir)
+
+    with pytest.raises(RoomError, match="valid email address"):
+        await actions.invite(
+            session,
+            room.id,
+            owner,
+            Role.editor,
+            "orcid-1@orcid.placeholder.cocat.org",
+            make_request(),
+        )
+
+
+async def test_invite_forwards_the_requested_lifetime(
+    session: AsyncSession, update_dir: str
+) -> None:
+    owner = await make_orm_user(session, "owner@example.com")
+    room = await create_room(session, owner, "Lab")
+    actions = RoomActions(Connections(), update_dir)
+
+    await actions.invite(
+        session,
+        room.id,
+        owner,
+        Role.editor,
+        "guest@example.org",
+        make_request(),
+        timedelta(days=3),
+    )
+
+    [invitation] = await list_invitations(session, room.id, owner)
+    assert invitation.expires_at < utcnow() + timedelta(days=4)

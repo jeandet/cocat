@@ -179,7 +179,10 @@ async def test_an_unknown_address_gets_a_fresh_account(session: AsyncSession) ->
     assert created.is_verified is False
 
 
-def test_providers_need_a_public_url(update_dir: str, db_path: str) -> None:
+def test_providers_need_a_public_url(
+    update_dir: str, db_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("COCAT_PUBLIC_URL", raising=False)
     with clean_nicegui():
         with pytest.raises(ValueError, match="COCAT_PUBLIC_URL"):
             CocatApp(update_dir, db_path, oauth=[(oauth_provider(), FakeOAuthClient())])

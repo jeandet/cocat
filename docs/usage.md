@@ -217,6 +217,11 @@ directory the server user cannot modify.
 
 ### Email
 
+`COCAT_PUBLIC_URL` is required as soon as `COCAT_SMTP_HOST` is set: a link that goes out
+by mail must not be built from the `Host` header, exactly as with the OAuth providers
+below. A mail the relay refuses never fails the request, and the invitation it belonged
+to is rolled back.
+
 Set `COCAT_SMTP_HOST` and `COCAT_MAIL_FROM` to send verification, password-reset and
 invitation emails. The connection is a plain SMTP submission on port 587, upgraded with
 STARTTLS, with a ten-second timeout: implicit TLS on port 465 is not supported. When

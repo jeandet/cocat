@@ -10,7 +10,6 @@ from fastapi_users.exceptions import (
 )
 from nicegui import ui
 
-from ..app.mail import MailError
 from .auth import MESSAGES, error_key, redirect, same_site
 from .context import UIContext
 from .layout import ui_url
@@ -56,10 +55,7 @@ def make_reset_router(ctx: UIContext) -> APIRouter:
                 pass
             else:
                 if user.is_active:
-                    try:
-                        await manager.forgot_password(user, request)
-                    except MailError:
-                        pass
+                    await manager.forgot_password(user, request)
         return redirect(ui_url(request, "/forgot-password") + "?sent=1")
 
     return router
@@ -70,7 +66,7 @@ async def apply(ctx: UIContext, request: Request, token: str, password: str) -> 
         manager = ctx.backend.user_manager(session)
         try:
             await manager.reset_password(token, password, request)
-        except (InvalidResetPasswordToken, UserInactive):
+        except (InvalidResetPasswordToken, UserInactive, UserNotExists):
             ui.notify(INVALID)
             return False
     return True

@@ -180,7 +180,13 @@ def make_api_router(
             )
         else:
             invitation, token = await actions.invite(
-                session, room_id, user, Role(body.role), body.email, request
+                session,
+                room_id,
+                user,
+                Role(body.role),
+                body.email,
+                request,
+                timedelta(days=body.expires_in_days),
             )
         return InvitationCreated(id=invitation.id, token=token)
 

@@ -254,3 +254,8 @@ async def test_delete_room_removes_memberships(session, owner, editor):
 def anyio_backend() -> str:
     """aiosqlite only runs on asyncio, so these tests cannot use trio."""
     return "asyncio"
+
+
+async def test_a_room_name_with_control_characters_is_refused(session, owner):
+    with pytest.raises(RoomError, match="control characters"):
+        await create_room(session, owner, "Lab\nRoom")

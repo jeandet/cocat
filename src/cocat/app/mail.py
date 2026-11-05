@@ -77,14 +77,16 @@ class Mail:
     async def send(self, to: str, subject: str, body: str) -> None:
         if is_placeholder(to):
             raise MailError(f"{to} is a placeholder address and receives no mail")
-        message = EmailMessage()
-        message["To"] = to
-        message["From"] = self.sender
-        message["Subject"] = subject
-        message.set_content(body)
         try:
+            message = EmailMessage()
+            message["To"] = to
+            message["From"] = self.sender
+            message["Subject"] = subject
+            message.set_content(body)
             await anyio.to_thread.run_sync(self._deliver, message)
-        except (OSError, smtplib.SMTPException) as error:
+        except (OSError, smtplib.SMTPException, ValueError) as error:
+            # A header with a newline raises ValueError before the relay is
+            # reached; callers get the same MailError as a refusal.
             raise MailError(f"{self.host} refused the message: {error}") from error
 
     def _deliver(self, message: EmailMessage) -> None:

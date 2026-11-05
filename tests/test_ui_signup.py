@@ -113,7 +113,9 @@ async def test_an_address_that_is_not_an_email_is_refused(ui: UI) -> None:
 async def test_a_flooded_limiter_is_refused(ui: UI) -> None:
     for _ in range(10):
         await ui.user.http_client.post(
-            "/ui/login", data={"username": NEW, "password": "wrong"}
+            "/ui/signup",
+            data={"email": "not-an-address", "password": "pwd123"},
+            follow_redirects=False,
         )
 
     response = await sign_up(ui)
@@ -132,7 +134,7 @@ async def test_a_mailer_that_fails_still_creates_the_account(
 
     response = await sign_up(ui_mail)
 
-    assert location(response) == "/ui/login?error=mail"
+    assert location(response) == "/ui/login?created=1"
     assert await exists(ui_mail, NEW)
 
 

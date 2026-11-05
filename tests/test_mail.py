@@ -227,3 +227,11 @@ def test_the_invitation_mail_names_the_room_and_the_inviter() -> None:
     assert "owner@example.org" in body
     assert "https://cocat.example.org/ui/invitation#tok" in body
     assert "14 days" in body
+
+
+async def test_a_header_injection_is_refused(smtp: type[FakeSMTP]) -> None:
+    mail = Mail.from_env(configured())
+    assert mail is not None
+
+    with pytest.raises(MailError):
+        await mail.send("guest@example.org", "hi\r\nBcc: spy@example.org", "body")

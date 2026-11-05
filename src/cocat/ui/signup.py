@@ -7,14 +7,13 @@ from fastapi_users.exceptions import UserAlreadyExists
 from nicegui import ui
 from pydantic import ValidationError
 
-from ..app.mail import MailError
 from ..app.schemas import UserCreate
 from .auth import MESSAGES, error_key, redirect, same_site, with_cookies
 from .context import UIContext
 from .layout import ui_url
 
 
-def signup_form(action: str, message: str) -> str:
+def signup_form(action: str, message: str, login_url: str) -> str:
     return f"""
 <form method="post" action="{html.escape(action)}">
   <label for="email">Email</label>
@@ -25,7 +24,7 @@ def signup_form(action: str, message: str) -> str:
   <button id="signup-submit" type="submit">Sign up</button>
   <p class="error">{html.escape(message)}</p>
 </form>
-<p>Already have an account? <a href="{html.escape(action.rsplit("/", 1)[0])}/login">Log in</a></p>
+<p>Already have an account? <a href="{html.escape(login_url)}">Log in</a></p>
 """
 
 
@@ -54,9 +53,7 @@ def make_signup_router(ctx: UIContext) -> APIRouter:
                 user = await manager.create(credentials, request=request)
             except UserAlreadyExists:
                 return redirect(ui_url(request, "/signup") + "?error=exists")
-            except MailError:
-                return redirect(ui_url(request, "/login") + "?error=mail")
-            if ctx.backend.mail is not None:
+            if not user.is_verified:
                 return redirect(ui_url(request, "/login") + "?created=1")
             token = await ctx.backend.get_jwt_strategy().write_token(user)
             response = redirect(ui_url(request, "/rooms"))
@@ -73,4 +70,6 @@ def register(ctx: UIContext) -> None:
     def signup_page(request: Request) -> None:
         message = MESSAGES.get(error_key(request) or "", "")
         ui.label("Sign up").classes("text-2xl")
-        ui.html(signup_form(ui_url(request, "/signup"), message)).mark("signup-form")
+        ui.html(
+            signup_form(ui_url(request, "/signup"), message, ui_url(request, "/login"))
+        ).mark("signup-form")

@@ -4,6 +4,7 @@ from urllib.parse import urlencode, urlsplit
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi_users.exceptions import UserNotExists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..app.db import User
@@ -18,7 +19,7 @@ MESSAGES = {
     "created": "Account created. Check your inbox to verify it.",
     "reset": "Password changed. Sign in with the new one.",
     "sent": "If that address has an account, a reset link is on its way.",
-    "mail": "We could not send the email. Ask an administrator.",
+    "resent": "If that account is not verified yet, a new link is on its way.",
     "email": "That is not an email address.",
 }
 
@@ -56,12 +57,7 @@ def safe_next(request: Request, value: str | None) -> str:
     return value
 
 
-def login_form(
-    action: str,
-    error: str | None,
-    sign_up: str = "/ui/signup",
-    reset: str = "/ui/forgot-password",
-) -> str:
+def login_form(action: str, error: str | None, sign_up: str, reset: str) -> str:
     message = MESSAGES.get(error or "", "")
     return f"""
 <form method="post" action="{html.escape(action)}">
@@ -83,6 +79,16 @@ def logout_form(action: str) -> str:
         f'<form method="post" action="{html.escape(action)}">'
         '<button type="submit">Log out</button></form>'
     )
+
+
+def resend_form(action: str) -> str:
+    return f"""
+<form method="post" action="{html.escape(action)}">
+  <label for="resend-email">Email</label>
+  <input id="resend-email" name="email" type="email" autocomplete="email" required>
+  <button type="submit">Resend the verification mail</button>
+</form>
+"""
 
 
 def redirect(target: str) -> RedirectResponse:
@@ -153,6 +159,27 @@ def make_auth_router(ctx: UIContext) -> APIRouter:
         response = redirect(ui_url(request, "/login"))
         return with_cookies(response, await transport.get_logout_response())
 
+    @router.post("/ui/request-verify")
+    async def post_request_verify(request: Request) -> Response:
+        same_site(request)
+        try:
+            ctx.check_limit(request)
+        except HTTPException:
+            return redirect(ui_url(request, "/login") + "?error=too_many")
+
+        form = await request.form()
+        async with ctx.db.async_session_maker() as session:
+            manager = ctx.backend.user_manager(session)
+            try:
+                user = await manager.get_by_email(str(form.get("email", "")))
+            except UserNotExists:
+                user = None
+            # One answer for every case, so the form cannot list accounts.
+            if user is not None and user.is_active and not user.is_verified:
+                await manager.request_verify(user, request)
+
+        return redirect(ui_url(request, "/login") + "?resent=1")
+
     return router
 
 
@@ -163,7 +190,7 @@ def next_query(request: Request) -> str:
 
 def error_key(request: Request) -> str | None:
     params = request.query_params
-    for flag in ("created", "sent", "reset"):
+    for flag in ("created", "sent", "reset", "resent"):
         if params.get(flag):
             return flag
     return params.get("error")

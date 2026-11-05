@@ -105,6 +105,10 @@ class CocatApp:  # pragma: nocover
         self.connections = Connections()
         backend = get_backend(db, load_secret(Path(f"{db_path}.secret")), mail)
         self.mail = mail
+        if mail is not None and not os.environ.get("COCAT_PUBLIC_URL", "").strip():
+            # A mailed link must not be built from the request's Host header:
+            # whoever controls it would receive the token.
+            raise ValueError("COCAT_PUBLIC_URL is required when COCAT_SMTP_HOST is set")
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):

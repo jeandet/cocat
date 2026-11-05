@@ -63,9 +63,18 @@ def client_key(request: Request, trusted_proxies: int) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def limit(limiter: RateLimiter, trusted_proxies: int) -> Callable[[Request], None]:
+def limit(
+    limiter: RateLimiter, trusted_proxies: int, scope: str | None = None
+) -> Callable[[Request], None]:
+    """Dependency refusing a client that calls one route too often.
+
+    Every route gets its own budget: a flood of login attempts must not lock a
+    user out of signing up or asking for a reset link.
+    """
+
     def dependency(request: Request) -> None:
-        if not limiter.hit(client_key(request, trusted_proxies)):
+        bucket = request.url.path if scope is None else scope
+        if not limiter.hit(f"{bucket}|{client_key(request, trusted_proxies)}"):
             raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS)
 
     return dependency

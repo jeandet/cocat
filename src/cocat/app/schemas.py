@@ -3,9 +3,10 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi_users import schemas
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from .db import Role
+from .mail import is_placeholder
 
 
 class RoomUsers(BaseModel):
@@ -23,7 +24,16 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
 
 
 class UserCreate(schemas.BaseUserCreate):
-    pass
+    @field_validator("email")
+    @classmethod
+    def reject_placeholder(cls, value: str) -> str:
+        """`placeholder.cocat.org` is ours; a real sign-up there is a mistake.
+
+        Letting it through creates an account nothing can ever mail or verify.
+        """
+        if is_placeholder(value):
+            raise ValueError("That address is reserved")
+        return value
 
 
 class UserUpdate(schemas.BaseUserUpdate):
@@ -67,7 +77,9 @@ class InvitationCreate(BaseModel):
 
 class InvitationCreated(BaseModel):
     id: int
-    token: str
+    token: str = Field(
+        description="Empty when the invitation was emailed to the guest."
+    )
 
 
 class InvitationOut(BaseModel):

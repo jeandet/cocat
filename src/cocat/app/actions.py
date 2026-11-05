@@ -1,13 +1,15 @@
 from dataclasses import dataclass
+from datetime import timedelta
 from uuid import UUID
 
 from fastapi import Request
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .connections import Connections
 from .db import Invitation, Role, Room, User
-from .invitations import create_invitation
-from .mail import Mailer, MailError, invitation_mail
+from .invitations import INVITATION_LIFETIME, create_invitation
+from .mail import Mailer, MailError, invitation_mail, is_placeholder
 from .rooms import RoomError, delete_room, remove_member
 from .storage import remove_room_file
 from .urls import absolute_url
@@ -52,21 +54,25 @@ class RoomActions:
         role: Role,
         email: str,
         request: Request,
+        expires_in: timedelta = INVITATION_LIFETIME,
     ) -> tuple[Invitation, str]:
         """Create an invitation and mail it when a mailer is configured.
 
         Without SMTP the raw token comes back: the sender has no other way to
-        hand the link over than to copy it out of the page.
+        hand the link over than to copy it out of the page. With SMTP the token
+        stays here — a mail that failed is undone rather than left behind for
+        nobody to use.
         """
+        address = _address(email)
         invitation, token = await create_invitation(
-            session, room_id, actor, role, email=email
+            session, room_id, actor, role, email=address, expires_in=expires_in
         )
         if self.mail is None:
             return invitation, token
         room = await session.get_one(Room, room_id)
         try:
             await self.mail.send(
-                email,
+                address,
                 *invitation_mail(
                     room.name,
                     actor.email,
@@ -74,7 +80,23 @@ class RoomActions:
                 ),
             )
         except MailError as error:
+            await session.delete(invitation)
+            await session.commit()
             raise RoomError(
-                "The invitation was created but the email could not be sent"
+                "The email could not be sent; no invitation was created"
             ) from error
         return invitation, ""
+
+
+ADDRESS = TypeAdapter(EmailStr)
+
+
+def _address(email: str) -> str:
+    """The address to invite, or a refusal both front ends share."""
+    stripped = email.strip()
+    if not stripped or is_placeholder(stripped):
+        raise RoomError("Enter a valid email address")
+    try:
+        return str(ADDRESS.validate_python(stripped))
+    except ValidationError as error:
+        raise RoomError("Enter a valid email address") from error

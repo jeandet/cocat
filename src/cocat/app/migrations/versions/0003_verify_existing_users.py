@@ -22,4 +22,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Which accounts were verified before this migration cannot be recovered, so
+    # the flag is left alone: un-verifying everybody would lock out users.
     pass

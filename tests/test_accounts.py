@@ -11,6 +11,7 @@ from cocat.app.db import User
 from cocat.app.mail import PLACEHOLDER_DOMAIN
 from cocat.app.rooms import list_user_rooms
 from cocat.app.schemas import UserCreate
+from cocat.app.urls import absolute_url
 from cocat.app.users import UserManager, make_user_manager
 
 pytestmark = pytest.mark.anyio
@@ -167,3 +168,14 @@ async def test_the_mail_body_never_names_the_token_alone(
     [(_, _, body)] = mail.mails_to(address)
     token = body.split("/ui/verify#", 1)[1].split()[0]
     assert len(token) > 20
+
+
+def test_the_public_url_falls_back_to_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COCAT_PUBLIC_URL", raising=False)
+
+    assert (
+        absolute_url(make_request(), "/verify#tok")
+        == "https://testserver/ui/verify#tok"
+    )

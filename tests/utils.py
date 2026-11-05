@@ -26,6 +26,8 @@ from cocat.app.oauth import OAuthProviderConfig
 from cocat.app.rooms import list_user_rooms
 from cocat.cli import _create_user
 
+os.environ.setdefault("COCAT_PUBLIC_URL", "https://testserver")
+
 COOKIE_NAME = "fastapiusersauth"
 
 T = TypeVar("T")

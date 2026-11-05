@@ -139,7 +139,7 @@ async def test_a_mismatched_repeat_is_refused(ui_mail: UI) -> None:
 async def test_a_flooded_limiter_is_refused(ui: UI) -> None:
     for _ in range(10):
         await ui.user.http_client.post(
-            "/ui/login", data={"username": "x@example.org", "password": "wrong"}
+            FORGOT, data={"email": "x@example.org"}, follow_redirects=False
         )
 
     response = await forgot(ui)
