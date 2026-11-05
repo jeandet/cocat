@@ -17,7 +17,7 @@ from utils import (
     user_by_email,
 )
 
-from cocat.app.app import CocatApp
+from cocat.app.app import CocatApp, public_base_from
 from cocat.app.db import OAuthAccount, User
 from cocat.app.oauth import (
     TrustedEmailClient,
@@ -67,7 +67,7 @@ def test_a_provider_is_read_with_safe_defaults() -> None:
 
     assert provider.name == "orcid"
     assert provider.verifies_email is False
-    assert provider.scopes == ["openid"]
+    assert provider.scopes == ["openid", "email"]
     assert provider.client_secret.get_secret_value() == "s3cr3t-value"
     assert "s3cr3t-value" not in repr(provider)
 
@@ -94,7 +94,7 @@ def test_the_client_is_built_from_the_configuration() -> None:
     assert captured["client_secret"] == "client-secret"
     assert captured["openid_configuration_endpoint"].startswith("https://provider")
     assert captured["name"] == "orcid"
-    assert captured["base_scopes"] == ["openid"]
+    assert captured["base_scopes"] == ["openid", "email"]
 
 
 def test_a_provider_that_is_down_does_not_stop_the_server() -> None:
@@ -125,7 +125,9 @@ async def test_only_a_trusted_address_survives() -> None:
         placeholder_email("orcid", "orcid-1234"),
     )
     assert trusted.name == "orcid"
-    assert trusted.authorization_url == ""
+    assert (
+        await trusted.get_authorization_url("https://callback", "state")
+    ).startswith("https://provider.example.org/authorize?state=state")
 
 
 def test_a_placeholder_account_can_read_its_profile(app_client: AppClient) -> None:
@@ -202,3 +204,50 @@ async def test_an_unknown_address_is_created_with_association_on(
 
     assert created.email == "fresh@example.org"
     assert created.is_verified is True
+
+
+async def test_a_placeholder_address_is_never_associated(session: AsyncSession) -> None:
+    address = placeholder_email("orcid", "orcid-9")
+    await make_orm_user(session, address)
+
+    with pytest.raises(UserAlreadyExists):
+        await manager_for(session, RecordingMail()).oauth_callback(
+            "orcid", "token", "orcid-9", address, associate_by_email=True
+        )
+
+
+async def test_an_empty_or_malformed_claim_becomes_a_placeholder() -> None:
+    for claim in ("", "not an address"):
+        client = TrustedEmailClient(
+            oauth_provider(verifies_email=True), FakeOAuthClient(email=claim)
+        )
+
+        assert await client.get_id_email("token") == (
+            "orcid-1234",
+            placeholder_email("orcid", "orcid-1234"),
+        )
+
+
+def test_a_malformed_discovery_document_is_skipped() -> None:
+    def factory(**kwargs: Any) -> FakeOAuthClient:
+        if kwargs["name"] == "broken":
+            raise KeyError("token_endpoint")
+        if kwargs["name"] == "garbled":
+            raise ValueError("not json")
+        return FakeOAuthClient()
+
+    providers = build_clients(
+        [oauth_provider("broken"), oauth_provider("garbled"), oauth_provider("up")],
+        factory,
+    )
+
+    assert list(providers) == ["up"]
+
+
+def test_the_public_base_is_the_configured_origin_with_the_prefix() -> None:
+    assert (
+        public_base_from({"COCAT_PUBLIC_URL": "https://cocat.example.org/"}, "/cocat")
+        == "https://cocat.example.org/cocat"
+    )
+    with pytest.raises(ValueError, match="COCAT_PUBLIC_URL"):
+        public_base_from({}, "")

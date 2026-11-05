@@ -1,5 +1,5 @@
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -89,6 +89,18 @@ def make_providers(oauth: Any = None) -> dict[str, Provider]:
         config.name: Provider(config, TrustedEmailClient(config, client))
         for config, client in oauth
     }
+
+
+def public_base_from(environ: Mapping[str, str], root_path: str) -> str:
+    """Where a provider sends the browser back, proxy prefix included.
+
+    The origin cannot come from the request: the provider redirects the browser
+    to an address that must match what was registered with it.
+    """
+    configured = environ.get("COCAT_PUBLIC_URL", "").strip()
+    if not configured:
+        raise ValueError("COCAT_PUBLIC_URL is required to build OAuth redirect URLs")
+    return configured.rstrip("/") + root_path
 
 
 class CocatApp:  # pragma: nocover
@@ -220,14 +232,7 @@ class CocatApp:  # pragma: nocover
             return {"users": [member.email for member, _ in members]}
 
         providers = make_providers(oauth)
-        public_base = ""
-        if providers:
-            configured = os.environ.get("COCAT_PUBLIC_URL", "").strip()
-            if not configured:
-                raise ValueError(
-                    "COCAT_PUBLIC_URL is required to build OAuth redirect URLs"
-                )
-            public_base = configured.rstrip("/") + root_path
+        public_base = public_base_from(os.environ, root_path) if providers else ""
 
         mount_ui(
             app,

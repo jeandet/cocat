@@ -15,12 +15,13 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi_users.router.oauth import get_oauth_router
 from httpx_oauth.clients.openid import OpenID, OpenIDConfigurationError
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, EmailStr, Field, SecretStr, TypeAdapter
 
 from .mail import PLACEHOLDER_DOMAIN
 from .users import Backend
 
 LOGGER = logging.getLogger(__name__)
+ADDRESS = TypeAdapter(EmailStr)
 
 
 class OAuthProviderConfig(BaseModel):
@@ -36,7 +37,7 @@ class OAuthProviderConfig(BaseModel):
     client_id: str
     client_secret: SecretStr
     verifies_email: bool = False
-    scopes: list[str] = ["openid"]
+    scopes: list[str] = ["openid", "email"]
 
 
 @dataclass(frozen=True)
@@ -65,8 +66,10 @@ def placeholder_email(provider: str, account_id: str) -> str:
 class TrustedEmailClient:
     """Only pass an address on when the operator trusts the provider to have checked it.
 
-    Everything else goes through as a placeholder, so an unverified claim can
-    never match a local account.
+    An empty claim, a string that is not an address, or a provider nobody
+    vouched for all become a placeholder, so an unverified claim can never match
+    a local account. This is the only place that decides, so both the stock
+    router and the web callback get the same answer.
     """
 
     def __init__(self, config: OAuthProviderConfig, client: Any) -> None:
@@ -74,14 +77,27 @@ class TrustedEmailClient:
         self._client = client
         self.name = config.name
 
-    def __getattr__(self, item: str) -> Any:
-        return getattr(self._client, item)
+    async def get_authorization_url(self, *args: Any, **kwargs: Any) -> str:
+        return await self._client.get_authorization_url(*args, **kwargs)
+
+    async def get_access_token(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return await self._client.get_access_token(*args, **kwargs)
 
     async def get_id_email(self, token: str) -> tuple[str, str]:
         account_id, email = await self._client.get_id_email(token)
-        if self.config.verifies_email and email is not None:
-            return account_id, email
+        if self.config.verifies_email and _is_address(email):
+            return account_id, str(email)
         return account_id, placeholder_email(self.config.name, account_id)
+
+
+def _is_address(email: str | None) -> bool:
+    if not email:
+        return False
+    try:
+        ADDRESS.validate_python(email)
+    except ValueError:
+        return False
+    return True
 
 
 def build_client(
@@ -108,7 +124,7 @@ def build_clients(
     for config in configs:
         try:
             client = build_client(config, factory)
-        except OpenIDConfigurationError:
+        except (OpenIDConfigurationError, KeyError, ValueError):
             LOGGER.warning("Provider %s is unreachable; its login is off.", config.name)
             continue
         providers[config.name] = Provider(

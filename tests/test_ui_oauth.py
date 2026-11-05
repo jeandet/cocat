@@ -2,6 +2,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from conftest import UI
+from httpx_oauth.exceptions import GetIdEmailError
 from httpx_oauth.oauth2 import GetAccessTokenError
 from utils import ensure_user, set_active
 
@@ -81,7 +82,8 @@ async def test_a_missing_code_is_refused(ui_oauth: UI) -> None:
         f"/ui/oauth/orcid/callback?state={state}", follow_redirects=False
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/login?error=provider"
 
 
 async def test_a_token_error_is_refused(ui_oauth: UI) -> None:
@@ -91,7 +93,8 @@ async def test_a_token_error_is_refused(ui_oauth: UI) -> None:
 
     response = await finish_login(ui_oauth, state)
 
-    assert response.status_code == 400
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/login?error=provider"
 
 
 async def test_a_provider_without_an_email_asks_for_one(
@@ -137,3 +140,37 @@ async def test_a_taken_address_is_reported(ui_oauth: UI) -> None:
 
     assert response.status_code == 303
     assert response.headers["location"] == "/ui/login?error=exists"
+
+
+async def test_a_cross_site_login_is_refused(ui_oauth: UI) -> None:
+    response = await ui_oauth.user.http_client.get(
+        "/ui/oauth/orcid/login",
+        headers={"sec-fetch-site": "cross-site"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 403
+
+
+async def test_a_profile_error_returns_to_the_login_page(ui_oauth: UI) -> None:
+    state = await start_login(ui_oauth)
+    assert ui_oauth.oauth_client is not None
+    ui_oauth.oauth_client.failure = GetIdEmailError("no profile")
+
+    response = await finish_login(ui_oauth, state)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/login?error=provider"
+
+
+async def test_the_login_route_is_rate_limited(ui_oauth: UI) -> None:
+    for _ in range(10):
+        await ui_oauth.user.http_client.get(
+            "/ui/oauth/orcid/login", follow_redirects=False
+        )
+
+    response = await ui_oauth.user.http_client.get(
+        "/ui/oauth/orcid/login", follow_redirects=False
+    )
+
+    assert response.status_code == 429

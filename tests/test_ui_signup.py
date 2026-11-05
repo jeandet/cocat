@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from utils import in_session, user_by_email
 
 from cocat.app.mail import MailError
+from cocat.app.oauth import placeholder_email
 
 pytestmark = pytest.mark.anyio
 
@@ -151,3 +152,12 @@ def test_registration_is_public_and_rate_limited(app_client: AppClient) -> None:
     )
 
     assert response.status_code == 429
+
+
+async def test_a_placeholder_address_cannot_be_registered(ui: UI) -> None:
+    address = placeholder_email("orcid", "orcid-77")
+
+    response = await sign_up(ui, email=address)
+
+    assert location(response) == "/ui/signup?error=email"
+    assert not await exists(ui, address)

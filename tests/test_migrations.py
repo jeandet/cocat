@@ -282,3 +282,29 @@ def test_oauth_accounts_are_stored(tmp_path: Path) -> None:
     assert "oauth_account" in table_names(db_path)
     indexes = read_rows(db_path, "PRAGMA index_list('oauth_account')")
     assert any(row[1].startswith("sqlite_autoindex_oauth_account") for row in indexes)
+
+
+def test_deleting_a_user_takes_its_oauth_accounts(tmp_path: Path) -> None:
+    db_path = tmp_path / "cascade.db"
+    make_legacy_db(db_path, {"john@a.org": ["x"]})
+    create_tables(db_path)
+
+    keys = read_rows(db_path, "PRAGMA foreign_key_list('oauth_account')")
+    assert any(row[2] == "user" and row[6] == "CASCADE" for row in keys)
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        user_id = connection.exec_driver_sql('SELECT id FROM "user"').scalar_one()
+        connection.exec_driver_sql(
+            "INSERT INTO oauth_account (id, user_id, oauth_name, access_token,"
+            " account_id, account_email) VALUES ('row-1', ?, 'orcid', 'token',"
+            " 'orcid-1', 'orcid@example.org')",
+            (user_id,),
+        )
+        connection.exec_driver_sql('DELETE FROM "user" WHERE id = ?', (user_id,))
+        remaining = connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM oauth_account"
+        ).scalar_one()
+    engine.dispose()
+
+    assert remaining == 0

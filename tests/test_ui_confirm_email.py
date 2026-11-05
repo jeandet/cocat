@@ -22,8 +22,18 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+async def make_placeholder(ui: UI) -> None:
+    async def replace(session: AsyncSession) -> None:
+        account = await user_by_email(session, ui.email)
+        account.email = placeholder_email("orcid", "orcid-1234")
+        await session.commit()
+
+    await in_session(ui.db_path, replace)
+
+
 async def open_page(ui: UI) -> None:
     await ui.log_in()
+    await make_placeholder(ui)
     await ui.user.open("/ui/confirm-email")
     await ui.user.should_see(marker="confirm-email-send", retries=30)
 
@@ -102,7 +112,7 @@ async def test_a_placeholder_address_is_refused(ui: UI) -> None:
 async def test_a_lost_session_is_reported(ui: UI) -> None:
     await open_page(ui)
 
-    await set_active(ui.db_path, ui.email, False)
+    await set_active(ui.db_path, placeholder_email("orcid", "orcid-1234"), False)
 
     fill(ui.user, "confirm-email", "fresh@example.org")
     click(ui.user, "confirm-email-send")
@@ -112,13 +122,24 @@ async def test_a_lost_session_is_reported(ui: UI) -> None:
 
 async def test_the_account_page_links_to_it_for_a_placeholder(ui: UI) -> None:
     await ui.log_in()
-
-    async def make_placeholder(session: AsyncSession) -> None:
-        account = await user_by_email(session, ui.email)
-        account.email = placeholder_email("orcid", "orcid-1234")
-        await session.commit()
-
-    await in_session(ui.db_path, make_placeholder)
+    await make_placeholder(ui)
 
     await ui.user.open("/ui/account")
     await ui.user.should_see(marker="nav-confirm-email", retries=30)
+
+
+async def test_a_proven_address_is_sent_to_the_account_page(ui: UI) -> None:
+    await ui.log_in()
+
+    await ui.user.open("/ui/confirm-email")
+
+    await ui.user.should_see(marker="change-password", retries=30)
+
+
+async def test_a_malformed_address_is_refused(ui: UI) -> None:
+    await open_page(ui)
+
+    fill(ui.user, "confirm-email", "not an address")
+    click(ui.user, "confirm-email-send")
+
+    await should_notify(ui.user, "That is not an email address")

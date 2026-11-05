@@ -95,11 +95,14 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         """Link an OAuth identity, but only to an account that proved its address.
 
         Associating by email is an account takeover waiting to happen when the
-        local account never proved it owns the address: anybody who registers
+        local account never proved it owns the address: anybody who registered
         it first would inherit the identity. A provider that does not hand over
-        a usable address gets a placeholder, which never matches an account.
+        a usable address gets a placeholder, which never matches an account, and
+        a new account is only marked verified when the operator vouched for the
+        provider (`is_verified_by_default` is forced off for placeholders).
         """
-        if associate_by_email and _real_address(account_email):
+        associate_by_email = associate_by_email and _real_address(account_email)
+        if associate_by_email:
             existing = await self._existing(account_email)
             if existing is not None and not existing.is_verified:
                 raise UserAlreadyExists()

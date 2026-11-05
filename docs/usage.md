@@ -153,7 +153,7 @@ These environment variables change how the server behaves:
 | Variable | Effect |
 |---|---|
 | `COCAT_PROXY_PREFIX` | path prefix the server is served under when a reverse proxy rewrites the URL (default: none) |
-| `COCAT_PUBLIC_URL` | origin used in the share links the web UI hands out (default: the host of the request) |
+| `COCAT_PUBLIC_URL` | public origin of the server; required as soon as `COCAT_SMTP_HOST` or `COCAT_OAUTH_PROVIDERS` is set |
 | `COCAT_TRUSTED_PROXIES` | number of reverse proxies in front of the server (default `0`) |
 | `COCAT_SECRET` | JWT signing secret, overriding the one stored in the `<db-path>.secret` file |
 | `COCAT_SMTP_HOST` | SMTP relay that sends verification, password-reset and invitation emails (default: none, see [Email](#email)) |
@@ -175,7 +175,7 @@ page mails a new password link only when a relay is configured.
 
 | Page | What it does |
 |---|---|
-| `/ui/signup` | create an account; it joins the room you already have access to as an editor |
+| `/ui/signup` | create an account, which starts with a personal room of its own |
 | `/ui/verify` | the page the verification link opens |
 | `/ui/forgot-password` | ask for a reset link by email |
 | `/ui/reset-password` | the page the reset link opens |
@@ -257,16 +257,33 @@ Providers come from `COCAT_OAUTH_PROVIDERS`, a JSON list:
 ]
 ```
 
-`verifies_email` defaults to `false` and `scopes` to `["openid"]`; ORCID has no email
-scope, so leave both alone for it. A provider whose discovery document cannot be read at
-startup is skipped with a warning naming it, and the rest of the server runs.
+`verifies_email` defaults to `false` and `scopes` to `["openid", "email"]`. A provider
+you mark as verifying addresses needs `email` in `scopes` to release one at all; ORCID has
+no email scope, so its entry sets `"scopes": ["openid"]` explicitly. A discovery document
+that cannot be read at startup (unreachable, or not the JSON it should be) skips that one
+provider with a warning naming it, and the rest of the server runs.
 
 Only a provider flagged `verifies_email: true` may hand cocat an address, and even then the
 identity is linked onto an existing account only when that account is already verified and
 a mailer is configured, so an unverified local account can never be taken over. Without the
 flag, or when the provider releases no address at all (ORCID's usual behaviour), the
 account gets a placeholder `@placeholder.cocat.org` address and its owner gives a real one
-on `/ui/confirm-email`. Nothing is ever mailed to a placeholder.
+on `/ui/confirm-email`. Nothing is ever mailed to a placeholder, and no account may
+register one: those addresses are reserved, so nobody can pre-claim the address a provider
+identity will later be mapped to. A claim that is empty or is not an address counts as no
+address at all.
+
+`/ui/confirm-email` is offered only to an account whose address is a placeholder; every
+other account is sent to its account page. It **replaces** the address rather than adding
+one, and fastapi-users marks the account unconfirmed until the new address is confirmed, so
+a mistyped address locks out password sign-in until it is confirmed: the login page offers
+"Resend the verification mail" for that. A malformed or already-owned address is refused
+with a message.
+
+Both the web and the REST login routes that start a provider dance are rate limited per
+client, and the web one refuses a navigation that another site started; when a provider
+reports an error, or the profile request fails, the browser comes back to `/ui/login` with
+a message rather than a bare error page.
 
 Set `COCAT_PUBLIC_URL` when providers are configured: the server refuses to start without
 it, because both callback URLs are built from it and both have to match what you registered
@@ -275,8 +292,10 @@ with the provider:
 - `<COCAT_PUBLIC_URL>/ui/oauth/<name>/callback` for the web UI
 - `<COCAT_PUBLIC_URL>/auth/<name>/callback` for the REST API
 
-An account that signs in through a provider has no cocat password to change on the account
-page: change it at the provider. Because ORCID usually hides the address, an ORCID login
+An account that signs in through a provider shows no password form on the account page:
+change the password at the provider. That also hides the form for a password account that
+was later linked to a provider by verified address, which is the price of not storing a
+"has a password" flag. Because ORCID usually hides the address, an ORCID login
 creates its own account even when you already have one; confirm the same address on both
 and nothing merges them by itself.
 

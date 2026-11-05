@@ -1,6 +1,15 @@
 # Version history
 
 ## 0.14.0
+- OAuth logins are hardened the same way the mailer is: a placeholder address can no
+  longer be registered (so nobody can pre-claim an ORCID iD), an identity is never linked
+  onto an account holding a placeholder, a provider error returns to `/ui/login` with a
+  message, the login route is rate limited and refuses a cross-site navigation, and the
+  default `scopes` now include `email` so a provider flagged `verifies_email` really
+  releases one.
+- `/ui/confirm-email` only serves accounts without an address; it refuses a malformed or
+  already-owned address with a message, and `COCAT_PUBLIC_URL` is required whenever a
+  mailer or a provider is configured rather than falling back to the request's `Host`.
 
 - An SMTP sender configured from `COCAT_SMTP_*` and `COCAT_MAIL_FROM` sends verification,
   password-reset and invitation emails. Without it the server runs unchanged: verification

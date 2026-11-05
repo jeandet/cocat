@@ -8,7 +8,7 @@ redirect, setting the same login cookie.
 import secrets
 
 import jwt
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse, Response
 from fastapi_users.exceptions import UserAlreadyExists
 from fastapi_users.jwt import decode_jwt
@@ -19,11 +19,12 @@ from fastapi_users.router.oauth import (
     generate_csrf_token,
     generate_state_token,
 )
+from httpx_oauth.exceptions import GetIdEmailError
 from httpx_oauth.oauth2 import GetAccessTokenError
 
 from ..app.mail import is_placeholder
-from ..app.oauth import Provider, placeholder_email
-from .auth import redirect, with_cookies
+from ..app.oauth import Provider
+from .auth import redirect, same_site, with_cookies
 from .context import UIContext
 from .layout import ui_url
 
@@ -34,8 +35,11 @@ def make_router(ctx: UIContext, provider: Provider, callback_url: str) -> APIRou
     name = provider.config.name
     router = APIRouter()
 
-    @router.get("/login")
-    async def login() -> Response:
+    @router.get("/login", dependencies=[Depends(ctx.check_limit)])
+    async def login(request: Request) -> Response:
+        # Starting the dance from another site would let it choose the account
+        # this browser ends up signed in to.
+        same_site(request)
         csrf_token = generate_csrf_token()
         state = generate_state_token({CSRF_TOKEN_KEY: csrf_token}, ctx.backend.secret)
         authorization_url = await provider.client.get_authorization_url(
@@ -63,18 +67,19 @@ def make_router(ctx: UIContext, provider: Provider, callback_url: str) -> APIRou
         code: str | None = Query(None),
         state: str | None = Query(None),
     ) -> Response:
-        if code is None or state is None:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Missing code or state")
-        if not _trusted_state(ctx, request, state):
+        # The provider navigates here from its own site, so `same_site` has
+        # nothing to say about this request; the signed state and its cookie do.
+        if state is None or not _trusted_state(ctx, request, state):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Bad state")
+        if code is None:
+            return _provider_failed(request)
         try:
             token = await provider.client.get_access_token(code, callback_url)
-        except GetAccessTokenError as error:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, "Could not reach the provider"
-            ) from error
-        account_id, claimed = await provider.client.get_id_email(token["access_token"])
-        account_email = claimed or placeholder_email(name, account_id)
+            account_id, account_email = await provider.client.get_id_email(
+                token["access_token"]
+            )
+        except (GetAccessTokenError, GetIdEmailError, KeyError):
+            return _provider_failed(request)
         async with ctx.db.async_session_maker() as session:
             manager = ctx.backend.user_manager(session)
             try:
@@ -105,6 +110,11 @@ def make_router(ctx: UIContext, provider: Provider, callback_url: str) -> APIRou
             )
 
     return router
+
+
+def _provider_failed(request: Request) -> RedirectResponse:
+    """Keep the flow on our pages instead of a bare 400 mid-login."""
+    return redirect(ui_url(request, "/login") + "?error=provider")
 
 
 def _trusted_state(ctx: UIContext, request: Request, state: str) -> bool:

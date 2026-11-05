@@ -21,6 +21,7 @@ MESSAGES = {
     "sent": "If that address has an account, a reset link is on its way.",
     "resent": "If that account is not verified yet, a new link is on its way.",
     "email": "That is not an email address.",
+    "provider": "The provider could not sign you in. Try again.",
 }
 
 
