@@ -165,3 +165,25 @@ def test_import_file():
         )
         == 95
     )
+
+
+def test_export_an_empty_catalogue():
+    db = DB()
+    catalogue = db.create_catalogue(name="empty", author="John")
+
+    xml = export_votable_str(catalogue)
+
+    assert "<TABLE" in xml
+    imported = DB()
+    import_votable_str(xml, imported)
+    assert imported.events == set()
+
+
+def test_export_without_a_catalogue():
+    xml = export_votable_str([])
+
+    assert "<TABLE" not in xml
+
+    imported = DB()
+    import_votable_str(xml, imported)
+    assert imported.events == set()

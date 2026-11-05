@@ -1,5 +1,5 @@
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -124,6 +124,12 @@ ATTRIBUTES = [
 STANDARD_FIELDS = [v[0] for v in ATTRIBUTES]
 
 
+def _common_attributes(events: Iterable[Event]) -> set[str]:
+    """Attributes every event carries; a catalogue without events has none."""
+    attribute_sets = [set(event.attributes) for event in events]
+    return set.intersection(*attribute_sets) if attribute_sets else set()
+
+
 def export_votable(catalogues: Sequence[Catalogue] | Catalogue) -> "VOTableFile":
     from astropy.io.votable.tree import Resource, TableElement, VOTableFile
 
@@ -142,13 +148,6 @@ def export_votable(catalogues: Sequence[Catalogue] | Catalogue) -> "VOTableFile"
 
     attributes = list(ATTRIBUTES)
 
-    all_attributes = {
-        attribute for catalogue in catalogue_list for attribute in catalogue.attributes
-    }
-    common_attributes = set.intersection(
-        *[set(catalogue.attributes) for catalogue in catalogue_list]
-    )
-
     for catalogue in catalogue_list:
         table = TableElement(votable, name=catalogue.name.replace(" ", "_"))
         resource.tables.append(table)
@@ -156,9 +155,7 @@ def export_votable(catalogues: Sequence[Catalogue] | Catalogue) -> "VOTableFile"
         all_attributes = {
             attribute for event in catalogue.events for attribute in event.attributes
         }
-        common_attributes = set.intersection(
-            *[set(event.attributes) for event in catalogue.events]
-        )
+        common_attributes = _common_attributes(catalogue.events)
 
         # check that all attributes are present in every event
         if all_attributes != common_attributes:
