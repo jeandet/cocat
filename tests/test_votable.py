@@ -187,3 +187,28 @@ def test_export_without_a_catalogue():
     imported = DB()
     import_votable_str(xml, imported)
     assert imported.events == set()
+
+
+def test_each_catalogue_keeps_its_own_attributes():
+    db = DB()
+    first = db.create_catalogue(name="first", author="John")
+    first.add_events(
+        [db.create_event(start=0, stop=1, author="John", attributes={"foo": 1.0})]
+    )
+    second = db.create_catalogue(name="second", author="John")
+    second.add_events(
+        [db.create_event(start=0, stop=1, author="John", attributes={"bar": 2.0})]
+    )
+
+    xml = export_votable_str([first, second])
+
+    imported = DB()
+    import_votable_str(xml, imported)
+    assert sorted(
+        (
+            event.attributes
+            for catalogue in imported.catalogues
+            for event in catalogue.events
+        ),
+        key=lambda attributes: sorted(attributes),
+    ) == [{"bar": 2.0}, {"foo": 1.0}]

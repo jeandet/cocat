@@ -146,11 +146,11 @@ def export_votable(catalogues: Sequence[Catalogue] | Catalogue) -> "VOTableFile"
     resource = Resource()
     votable.resources.append(resource)
 
-    attributes = list(ATTRIBUTES)
-
     for catalogue in catalogue_list:
         table = TableElement(votable, name=catalogue.name.replace(" ", "_"))
         resource.tables.append(table)
+
+        attributes = list(ATTRIBUTES)
 
         all_attributes = {
             attribute for event in catalogue.events for attribute in event.attributes
