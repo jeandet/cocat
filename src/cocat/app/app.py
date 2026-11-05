@@ -26,6 +26,7 @@ from .actions import RoomActions
 from .connections import Connections
 from .db import DB, User, get_db
 from .db import Room as RoomModel
+from .mail import Mailer
 from .prefix import PrefixPath
 from .ratelimit import RateLimiter, limit, load_trusted_proxies
 from .rooms import RoomError, list_members, list_user_rooms
@@ -75,11 +76,19 @@ class StoredRoom(Room):
 
 
 class CocatApp:  # pragma: nocover
-    def __init__(self, update_dir: str, db_path: str = "./test.db") -> None:
+    def __init__(
+        self,
+        update_dir: str,
+        db_path: str = "./test.db",
+        *,
+        mail: Mailer | None = None,
+        oauth: Any = None,
+    ) -> None:
         db = get_db(db_path)
         self.db = db
         self.connections = Connections()
-        backend = get_backend(db, load_secret(Path(f"{db_path}.secret")))
+        backend = get_backend(db, load_secret(Path(f"{db_path}.secret")), mail)
+        self.mail = mail
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -109,12 +118,11 @@ class CocatApp:  # pragma: nocover
         limiter = RateLimiter(10, 60.0)
         check_limit = limit(limiter, load_trusted_proxies())
 
+        auth_router = backend.fastapi_users.get_auth_router(
+            backend.auth_backend, requires_verification=mail is not None
+        )
         app.include_router(
-            with_route_dependency(
-                backend.fastapi_users.get_auth_router(backend.auth_backend),
-                "/login",
-                check_limit,
-            ),
+            with_route_dependency(auth_router, "/login", check_limit),
             prefix="/auth/jwt",
             tags=["auth"],
         )
@@ -134,7 +142,11 @@ class CocatApp:  # pragma: nocover
             tags=["auth"],
         )
         app.include_router(
-            backend.fastapi_users.get_verify_router(UserRead),
+            with_route_dependency(
+                backend.fastapi_users.get_verify_router(UserRead),
+                "/request-verify-token",
+                check_limit,
+            ),
             prefix="/auth",
             tags=["auth"],
         )

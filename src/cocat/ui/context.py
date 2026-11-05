@@ -7,8 +7,6 @@ from ..app.actions import RoomActions
 from ..app.db import DB
 from ..app.users import Backend
 
-PAGES_MOUNT = "/ui"
-
 
 @dataclass(frozen=True)
 class UIContext:

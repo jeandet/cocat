@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 from nicegui import ui
 
+from ..app.urls import PAGES_MOUNT
 from .auth import make_auth_router
-from .context import PAGES_MOUNT, UIContext
+from .context import UIContext
 
 
 def mount_ui(app: FastAPI, ctx: UIContext) -> None:

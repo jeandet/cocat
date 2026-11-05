@@ -2,21 +2,25 @@ import os
 import signal
 import subprocess
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from uuid import uuid4
 
 import anyio
 import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from nicegui.testing.user import User as SimulatedUser
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
 from utils import (
+    RecordingMail,
     clean_nicegui,
     create_room,
     create_user,
     log_in,
+    make_app,
     ui_simulation,
     wait_for_server,
 )
@@ -62,12 +66,31 @@ class AppClient:
     update_dir: str
 
 
+@dataclass
+class MailClient:
+    client: TestClient
+    mail: RecordingMail
+    db_path: str
+    update_dir: str
+
+
 @pytest.fixture()
 def app_client(update_dir: str, db_path: str) -> Iterator[AppClient]:
     with clean_nicegui():
-        app = CocatApp(update_dir, db_path).app
+        app = make_app(update_dir, db_path)
         with TestClient(app, base_url="https://testserver") as client:
             yield AppClient(client=client, db_path=db_path, update_dir=update_dir)
+
+
+@pytest.fixture()
+def app_client_mail(update_dir: str, db_path: str) -> Iterator[MailClient]:
+    mail = RecordingMail()
+    with clean_nicegui():
+        app = make_app(update_dir, db_path, mail)
+        with TestClient(app, base_url="https://testserver") as client:
+            yield MailClient(
+                client=client, mail=mail, db_path=db_path, update_dir=update_dir
+            )
 
 
 @dataclass
@@ -76,6 +99,7 @@ class UI:
     cocat: CocatApp
     db_path: str
     update_dir: str
+    mail: RecordingMail | None = None
     email: str = "ui@test.org"
     password: str = "pwd"
 
@@ -83,17 +107,31 @@ class UI:
         return await log_in(self.user, self.email, self.password)
 
 
-@pytest.fixture()
-async def ui(update_dir: str, db_path: str) -> AsyncIterator[UI]:
+@asynccontextmanager
+async def _simulated_ui(
+    update_dir: str, db_path: str, mail: RecordingMail | None = None
+) -> AsyncIterator[UI]:
     await _create_user(UI.email, UI.password, False, db_path)
     built: list[CocatApp] = []
 
-    def make_app():
-        built.append(CocatApp(update_dir, db_path))
+    def make() -> FastAPI:
+        built.append(CocatApp(update_dir, db_path, mail=mail))
         return built[-1].app
 
-    async with ui_simulation(make_app) as (_, user):
-        yield UI(user=user, cocat=built[-1], db_path=db_path, update_dir=update_dir)
+    async with ui_simulation(make) as (_, user):
+        yield UI(
+            user=user,
+            cocat=built[-1],
+            db_path=db_path,
+            update_dir=update_dir,
+            mail=mail,
+        )
+
+
+@pytest.fixture()
+async def ui(update_dir: str, db_path: str) -> AsyncIterator[UI]:
+    async with _simulated_ui(update_dir, db_path) as simulated:
+        yield simulated
 
 
 def make_user(db_path: str, email: str, password: str = "pwd") -> None:

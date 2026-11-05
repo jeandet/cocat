@@ -8,10 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..app.db import Invitation, Role, Room, User
 from ..app.invitations import create_invitation, list_invitations, revoke_invitation
 from ..app.rooms import get_role, list_members, transfer_ownership
+from ..app.urls import absolute_url
 from .context import UIContext
 from .layout import (
     ConfirmDialog,
-    absolute_url,
     act,
     leave_room,
     page_header,

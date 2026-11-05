@@ -18,6 +18,7 @@ from nicegui.testing.user import User
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cocat.app.app import CocatApp
 from cocat.app.connections import Connections
 from cocat.app.db import User as OrmUser
 from cocat.app.db import get_db
@@ -228,6 +229,35 @@ async def set_active(db_path: str, email: str, active: bool) -> None:
         await session.commit()
 
     await in_session(db_path, work)
+
+
+async def set_verified(db_path: str, email: str, verified: bool) -> None:
+    async def work(session: AsyncSession) -> None:
+        user = await user_by_email(session, email)
+        user.is_verified = verified
+        await session.commit()
+
+    await in_session(db_path, work)
+
+
+class RecordingMail:
+    """Mailer that keeps what it was asked to send instead of using a relay."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str, str]] = []
+
+    async def send(self, to: str, subject: str, body: str) -> None:
+        self.sent.append((to, subject, body))
+
+    def mails_to(self, address: str) -> list[tuple[str, str, str]]:
+        return [mail for mail in self.sent if mail[0] == address]
+
+
+def make_app(
+    update_dir: str, db_path: str, mail: RecordingMail | None = None
+) -> FastAPI:
+    """Build the ASGI app; callers wrap this in `clean_nicegui` like the fixtures do."""
+    return CocatApp(update_dir, db_path, mail=mail).app
 
 
 def get_credential(service_name: str, username: str | None) -> Credentials | None:

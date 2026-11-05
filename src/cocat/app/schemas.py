@@ -17,7 +17,9 @@ class UserRooms(BaseModel):
 
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
-    pass
+    # A provider that hides the address makes us store a placeholder, which is
+    # not a valid EmailStr; requests still validate through UserCreate.
+    email: str
 
 
 class UserCreate(schemas.BaseUserCreate):

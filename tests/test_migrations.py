@@ -262,3 +262,12 @@ def test_migrating_to_head_keeps_memberships(tmp_path):
     create_tables(db_path)
 
     assert read_rows(db_path, MEMBERS_SQL) == before
+
+
+def test_existing_users_are_verified(tmp_path):
+    db_path = tmp_path / "u.db"
+    make_legacy_db(db_path, {"john@a.org": ["x"]})
+
+    create_tables(db_path)
+
+    assert read_rows(db_path, 'SELECT is_verified FROM "user"') == [(1,)]

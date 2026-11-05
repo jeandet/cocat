@@ -1,7 +1,6 @@
-import os
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode
 
 from fastapi import Request, status
 from fastapi.responses import RedirectResponse
@@ -10,23 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..app.db import User
 from ..app.rooms import RoomError
-from .context import PAGES_MOUNT, UIContext
+from ..app.urls import ui_url
+from .context import UIContext
 
 COOKIE_NAME = "fastapiusersauth"
 
 T = TypeVar("T")
-
-
-def ui_url(request: Request, path: str) -> str:
-    """Absolute browser path of a UI page, reverse-proxy prefix included.
-
-    Measured in all four cases: inside a page `root_path` is already `/ui`, and
-    `app_root_path` carries the proxy prefix; on a host route there is no
-    `app_root_path` and `root_path` is the prefix alone. Guessing this from
-    `root_path` alone drops the mount on host routes.
-    """
-    base = request.scope.get("app_root_path", request.scope.get("root_path", ""))
-    return base + PAGES_MOUNT + path
 
 
 def login_link(request: Request, next_path: str) -> str:
@@ -34,33 +22,13 @@ def login_link(request: Request, next_path: str) -> str:
     return ui_url(request, "/login") + "?" + urlencode({"next": next_path})
 
 
-def public_base(request: Request) -> str:
-    """Origin other people reach the app at, for the links we hand out.
-
-    A share link is opened from someone else's browser, so its origin is not the
-    Host header of the request that created it; a deployment behind a proxy sets
-    `COCAT_PUBLIC_URL` instead.
-    """
-    configured = os.environ.get("COCAT_PUBLIC_URL")
-    if configured:
-        # Only the origin: a path here would duplicate the proxy prefix that
-        # `ui_url` already put in every link.
-        parts = urlsplit(configured)
-        return f"{parts.scheme}://{parts.netloc}"
-    return f"{request.url.scheme}://{request.url.netloc}"
-
-
-def absolute_url(request: Request, path: str) -> str:
-    return public_base(request) + ui_url(request, path)
-
-
 def redirect_page(
     target: str, status_code: int = status.HTTP_307_TEMPORARY_REDIRECT
 ) -> RedirectResponse:
-    """Leave a page before it renders, dropping the client NiceGUI made for it.
+    """Redirect from a page, after deleting the client NiceGUI built for it.
 
-    A client is collected when its socket disconnects, which never happens for a
-    page that redirects away, so every redirect would otherwise leak one.
+    NiceGUI collects a client when its socket disconnects, which never happens
+    for a page that redirects before rendering, so each such visit would leak one.
     """
     context.client.delete()
     return RedirectResponse(target, status_code)

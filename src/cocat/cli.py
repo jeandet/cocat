@@ -13,6 +13,7 @@ from fastapi_users.exceptions import UserAlreadyExists
 from .app import rooms
 from .app.app import CocatApp
 from .app.db import Role, Room, get_db
+from .app.mail import Mail
 from .app.schemas import UserCreate
 from .app.secret import load_secret
 from .app.users import get_backend, user_db_session
@@ -156,7 +157,7 @@ async def _serve(
     config.bind = [f"{host}:{port}"]
     shutdown_event = Event()
     tb = None
-    cocat_app = CocatApp(update_dir, db_path)
+    cocat_app = CocatApp(update_dir, db_path, mail=Mail.from_env())
     print(f"Web UI at http://{host}:{port}/ui/")
     async with create_task_group() as tg:
         try:
@@ -187,6 +188,7 @@ async def _create_user(email: str, password: str, is_superuser: bool, db_path: s
                     email=email,
                     password=password,
                     is_superuser=is_superuser,
+                    is_verified=True,
                 )
             )
             print(f"User {email} created")

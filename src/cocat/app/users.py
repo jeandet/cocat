@@ -13,15 +13,34 @@ from fastapi_users.db import BaseUserDatabase, SQLAlchemyUserDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import DB, User
+from .mail import Mailer, verification_mail
 from .rooms import create_personal_room, get_role
 
 
 class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
+    def __init__(
+        self, user_db: BaseUserDatabase[User, uuid.UUID], mail: Mailer | None = None
+    ) -> None:
+        super().__init__(user_db)
+        self.mail = mail
+
     async def on_after_register(
         self, user: User, request: Request | None = None
     ) -> None:
         await create_personal_room(user_db_session(self.user_db), user)
-        print(f"User {user.id} has registered.")
+        await self.verify_account(user, request)
+
+    async def verify_account(self, user: User, request: Request | None = None) -> None:
+        """Ask the user to confirm the address, unless that is already settled.
+
+        Both front ends reach this: the REST register route through
+        `on_after_register`, the UI sign-up page by calling it directly.
+        """
+        if user.is_verified:
+            return
+        from .accounts import start_verification  # accounts builds on this module
+
+        await start_verification(self, user, request)
 
     async def on_after_forgot_password(
         self, user: User, token: str, request: Request | None = None
@@ -31,11 +50,19 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def on_after_request_verify(
         self, user: User, token: str, request: Request | None = None
     ) -> None:
-        print(f"User {user.id} requested a verification.")
+        if self.mail is None or request is None:
+            return
+        from .accounts import verification_link  # accounts builds on this module
+
+        await self.mail.send(
+            user.email, *verification_mail(verification_link(request, token))
+        )
 
 
-def make_user_manager(user_db: SQLAlchemyUserDatabase, secret: str) -> UserManager:
-    user_manager = UserManager(user_db)
+def make_user_manager(
+    user_db: SQLAlchemyUserDatabase, secret: str, mail: Mailer | None = None
+) -> UserManager:
+    user_manager = UserManager(user_db, mail)
     user_manager.reset_password_token_secret = secret
     user_manager.verification_token_secret = secret
     return user_manager
@@ -66,6 +93,7 @@ async def user_from_token(
 @dataclass
 class Backend:
     secret: str
+    mail: Mailer | None
     auth_backend: Any
     current_active_user: Any
     fastapi_users: Any
@@ -74,7 +102,9 @@ class Backend:
     websocket_auth: Any
 
     def user_manager(self, session: AsyncSession) -> UserManager:
-        return make_user_manager(SQLAlchemyUserDatabase(session, User), self.secret)
+        return make_user_manager(
+            SQLAlchemyUserDatabase(session, User), self.secret, self.mail
+        )
 
     async def resolve_user(
         self, session: AsyncSession, token: str | None
@@ -84,11 +114,11 @@ class Backend:
         )
 
 
-def get_backend(db: DB, secret: str) -> Backend:
+def get_backend(db: DB, secret: str, mail: Mailer | None = None) -> Backend:
     async def get_user_manager(
         user_db: SQLAlchemyUserDatabase = Depends(db.get_user_db),
     ):
-        yield make_user_manager(user_db, secret)
+        yield make_user_manager(user_db, secret, mail)
 
     async def websocket_auth(
         websocket: WebSocket,
@@ -99,7 +129,7 @@ def get_backend(db: DB, secret: str) -> Backend:
             user = await user_from_token(
                 session,
                 fastapiusersauth,
-                make_user_manager(SQLAlchemyUserDatabase(session, User), secret),
+                make_user_manager(SQLAlchemyUserDatabase(session, User), secret, mail),
                 get_jwt_strategy(),
             )
             if (
@@ -126,6 +156,7 @@ def get_backend(db: DB, secret: str) -> Backend:
 
     return Backend(
         secret=secret,
+        mail=mail,
         auth_backend=auth_backend,
         current_active_user=current_active_user,
         fastapi_users=fastapi_users,
