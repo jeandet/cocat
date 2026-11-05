@@ -10,6 +10,7 @@ from conftest import (
 )
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from utils import clean_nicegui
 
 from cocat.app.app import CocatApp
 from cocat.app.storage import room_file
@@ -257,17 +258,20 @@ def test_websocket_does_not_hold_a_db_connection(tmp_path):
     update_dir = str(tmp_path / "update_dir")
     Path(update_dir).mkdir()
     db_path = str(tmp_path / "test.db")
-    cocat_app = CocatApp(update_dir, db_path)
-    with TestClient(cocat_app.app, base_url="https://testserver") as client:
-        app_client = AppClient(client=client, db_path=db_path, update_dir=update_dir)
-        make_user(db_path, "member@x.org")
-        login(client, "member@x.org")
-        room = create_room(app_client)
+    with clean_nicegui():
+        cocat_app = CocatApp(update_dir, db_path)
+        with TestClient(cocat_app.app, base_url="https://testserver") as client:
+            app_client = AppClient(
+                client=client, db_path=db_path, update_dir=update_dir
+            )
+            make_user(db_path, "member@x.org")
+            login(client, "member@x.org")
+            room = create_room(app_client)
 
-        with client.websocket_connect(
-            f"/room/{room['id']}", headers=ws_headers(client)
-        ):
-            assert cocat_app.db.engine.pool.checkedout() == 0
+            with client.websocket_connect(
+                f"/room/{room['id']}", headers=ws_headers(client)
+            ):
+                assert cocat_app.db.engine.pool.checkedout() == 0
 
 
 def test_removed_member_is_disconnected_and_cannot_reconnect(app_client):

@@ -182,6 +182,15 @@ request that created them; set it when the server runs behind a proxy. Set
 
 The login cookie is `Secure`, so browsers only keep it over HTTPS or on `localhost`.
 
+Two proxy details matter for that cookie. Logging in posts a form, and the post is
+refused when its `Origin` does not match the `Host` header, so a proxy that rewrites
+`Host` to an internal name must preserve the client's `Host` instead. And logging out
+clears the cookie but does not revoke the token: the JWT stays valid for up to an hour,
+so a cookie copied before logout keeps working until then.
+
+`COCAT_PUBLIC_URL` is an origin (`https://cocat.example.org`), not a path: it is
+concatenated with the prefix `COCAT_PROXY_PREFIX` already put in the link.
+
 `COCAT_TRUSTED_PROXIES` tells the per-client rate limiter (10 login attempts per minute)
 which address to trust: with the default `0` it uses the socket peer, and behind a proxy
 every client shares one bucket. It must be a non-negative integer, otherwise the server

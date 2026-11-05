@@ -21,7 +21,11 @@ async def read_fragment_token() -> str:
     of every machine it passes; the answer to this call arrives in a socket
     message body instead, and only lives in the page's Python scope.
     """
-    value = await ui.run_javascript(FRAGMENT_SCRIPT)
+    try:
+        value = await ui.run_javascript(FRAGMENT_SCRIPT)
+    except TimeoutError:
+        # A blocked socket or disabled JavaScript must not leave a blank page.
+        return ""
     return "" if value is None else str(value).strip()
 
 
@@ -38,12 +42,12 @@ def register(ctx: UIContext) -> None:
     @ui.page("/invitation")
     async def invitation_page(request: Request) -> None:
         user = await current_user(ctx, request)
-        token = await read_fragment_token()
-        if token:
-            ui.run_javascript(CLEAR_FRAGMENT_SCRIPT)
         if user is not None:
             page_header(request, user)
         ui.label("Join a room").classes("text-2xl")
+        token = await read_fragment_token()
+        if token:
+            ui.run_javascript(CLEAR_FRAGMENT_SCRIPT)
         state = {"token": token}
 
         async def join(session: AsyncSession, actor: User) -> tuple[str, str]:

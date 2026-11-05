@@ -7,12 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..app.db import Invitation, Role, Room, User
 from ..app.invitations import create_invitation, list_invitations, revoke_invitation
-from ..app.rooms import get_role, list_members, remove_member, transfer_ownership
+from ..app.rooms import get_role, list_members, transfer_ownership
 from .context import UIContext
 from .layout import (
     ConfirmDialog,
     absolute_url,
     act,
+    leave_room,
     page_header,
     perform,
     require_user,
@@ -46,24 +47,26 @@ def register(ctx: UIContext) -> None:
             return None
 
         ui.label(room_name).classes("text-2xl")
-        ui.label(f"You are an {role.value}")
         ui.link("My rooms", ui_url(request, "/rooms")).mark("back-to-rooms")
         dialog = ConfirmDialog()
-        state: dict[str, str] = {}
+        link = ""
 
         def leave() -> None:
             async def apply() -> None:
-                left = await act(
-                    ctx,
-                    lambda session, actor: remove_member(
-                        session, room_id, actor, actor.id
-                    ),
-                )
-                if left:
+                if await leave_room(ctx, room_id):
                     ui.notify("You left the room")
                     ui.navigate.to(ui_url(request, "/rooms"))
 
             dialog.ask(f"Leave {room_name}?", apply)
+
+        @ui.refreshable
+        async def heading() -> None:
+            async with ctx.db.async_session_maker() as session:
+                current = await get_role(session, room_id, user.id)
+            assert current is not None  # the page is only built for members
+            ui.label(f"You are an {current.value}")
+            if current is not Role.owner:
+                ui.button("Leave", on_click=leave).mark("leave-room")
 
         def remove(member_id: UUID, email: str) -> None:
             async def apply() -> None:
@@ -108,21 +111,23 @@ def register(ctx: UIContext) -> None:
             dialog.ask("Revoke this invitation?", apply)
 
         async def create_link() -> None:
+            nonlocal link
+
             async def work(session: AsyncSession, actor: User) -> str:
                 _, token = await create_invitation(session, room_id, actor, Role.editor)
                 return absolute_url(request, f"/invitation#{token}")
 
-            link = await perform(ctx, work)
-            if link is not None:
-                state["link"] = link
+            link = await perform(ctx, work) or ""
+            if link:
                 ui.notify("Share link created")
                 await invitations.refresh()
 
         def copy_link() -> None:
-            ui.clipboard.write(state.get("link", ""))
+            ui.clipboard.write(link)
             ui.notify("Link copied")
 
         async def refresh_all() -> None:
+            await heading.refresh()
             await members.refresh()
             await invitations.refresh()
 
@@ -161,9 +166,7 @@ def register(ctx: UIContext) -> None:
                     return
                 rows = await list_invitations(session, room_id, actor)
             ui.label("Invitations").classes("text-xl")
-            ui.input("Share link", value=state.get("link", "")).props("readonly").mark(
-                "share-link"
-            )
+            ui.input("Share link", value=link).props("readonly").mark("share-link")
             with ui.row().classes("items-center gap-2"):
                 ui.button("Create share link", on_click=create_link).mark(
                     "create-invitation"
@@ -182,9 +185,7 @@ def register(ctx: UIContext) -> None:
                         "Revoke", on_click=lambda id=invitation.id: revoke(id)
                     ).mark(f"revoke-{invitation.id}")
 
-        if role is not Role.owner:
-            ui.button("Leave", on_click=leave).mark("leave-room")
-
+        await heading()
         await members()
         await invitations()
         return None

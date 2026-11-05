@@ -31,12 +31,6 @@ pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio.
-    return "asyncio"
-
-
-@pytest.fixture()
 async def owner(session: AsyncSession) -> User:
     return await make_orm_user(session, "owner@x.org")
 

@@ -10,12 +10,6 @@ from cocat.ui.auth import login_form, logout_form
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio
-    return "asyncio"
-
-
 async def post_login(
     ui: UI,
     password: str = "pwd",
@@ -125,7 +119,14 @@ async def test_login_keeps_a_query(ui: UI) -> None:
 
 @pytest.mark.parametrize(
     "next_path",
-    ["//evil.example", "https://evil.example/", "/\\evil.example", "evil.example"],
+    [
+        "//evil.example",
+        "///evil.example",
+        "////evil.example",
+        "https://evil.example/",
+        "/\\evil.example",
+        "evil.example",
+    ],
 )
 async def test_login_refuses_a_foreign_next(ui: UI, next_path: str) -> None:
     response = await post_login(ui, next_path=next_path)

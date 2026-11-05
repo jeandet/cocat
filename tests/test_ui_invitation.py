@@ -24,12 +24,6 @@ from cocat.app.rooms import create_room
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio
-    return "asyncio"
-
-
 @dataclass
 class Seeded:
     room_id: str
@@ -197,3 +191,17 @@ async def test_paste_box_reads_a_bare_token(ui: UI) -> None:
     click(ui.user, "continue")
 
     await ui.user.should_see(seeded.room_name, retries=10)
+
+
+async def test_a_browser_that_never_answers_still_gets_the_paste_box(
+    ui: UI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def no_answer(*args: object, **kwargs: object) -> None:
+        raise TimeoutError
+
+    monkeypatch.setattr("cocat.ui.invitation.ui.run_javascript", no_answer)
+
+    await ui.user.open("/ui/invitation")
+
+    await ui.user.should_see("Join a room")
+    await ui.user.should_see(marker="paste-link")

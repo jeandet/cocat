@@ -2,18 +2,12 @@ from typing import cast
 
 import pytest
 from starlette.types import Receive, Scope, Send
-from utils import ui_simulation
+from utils import ensure_user, log_in, ui_simulation
 
 from cocat.app.app import CocatApp
 from cocat.app.prefix import PrefixPath
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio
-    return "asyncio"
 
 
 class Recorder:
@@ -65,3 +59,15 @@ async def test_pages_work_behind_a_proxy_prefix(
         redirect = await client.get("/ui/", follow_redirects=False)
         assert redirect.status_code == 307
         assert redirect.headers["location"] == "/cocat/ui/rooms"
+
+        for path in ("/api/rooms", "/cocat/api/rooms"):
+            assert (await client.get(path)).status_code == 401
+        await ensure_user(db_path, "proxy@example.org")
+        await log_in(user, "proxy@example.org", "pwd")
+        for path in ("/ui/rooms", "/cocat/ui/rooms"):
+            assert (await client.get(path)).status_code == 200
+        handshake = await client.get(
+            "/ui/_nicegui_ws/socket.io/?EIO=4&transport=polling"
+        )
+        assert handshake.status_code == 200
+        assert handshake.text.startswith("0{")

@@ -5,9 +5,9 @@ from fastapi.responses import RedirectResponse
 from nicegui import ui
 
 from ..app.db import Role
-from ..app.rooms import create_room, list_user_rooms, remove_member, rename_room
+from ..app.rooms import create_room, list_user_rooms, rename_room
 from .context import UIContext
-from .layout import ConfirmDialog, act, page_header, require_user, ui_url
+from .layout import ConfirmDialog, act, leave_room, page_header, require_user, ui_url
 
 Opener = Callable[[], None]
 
@@ -61,13 +61,7 @@ def register(ctx: UIContext) -> None:
 
         def leave(room_id: str, room_name: str) -> None:
             async def apply() -> None:
-                left = await act(
-                    ctx,
-                    lambda session, actor: remove_member(
-                        session, room_id, actor, actor.id
-                    ),
-                )
-                if left:
+                if await leave_room(ctx, room_id):
                     ui.notify("You left the room")
                     await room_list.refresh()
 

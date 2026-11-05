@@ -5,12 +5,6 @@ from utils import click, fill, set_active, should_notify
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio
-    return "asyncio"
-
-
 async def sign_in(ui: UI) -> None:
     await ui.log_in()
     await ui.user.open("/ui/account")

@@ -1,10 +1,7 @@
-from typing import cast
-from uuid import UUID
-
 import pytest
 from conftest import make_orm_user
-from fastapi import WebSocket
 from sqlalchemy.ext.asyncio import AsyncSession
+from utils import connect
 
 from cocat.app.actions import RoomActions
 from cocat.app.connections import Connections
@@ -13,26 +10,6 @@ from cocat.app.rooms import add_member, create_room, get_role, list_user_rooms
 from cocat.app.storage import room_file
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio
-    return "asyncio"
-
-
-class FakeWebSocket:
-    def __init__(self) -> None:
-        self.closed: list[int] = []
-
-    async def close(self, code: int = 1000) -> None:
-        self.closed.append(code)
-
-
-def connect(connections: Connections, room_id: str, user_id: UUID) -> FakeWebSocket:
-    socket = FakeWebSocket()
-    connections.add(room_id, user_id, cast(WebSocket, socket))
-    return socket
 
 
 async def test_delete_room_closes_sockets_and_removes_the_file(

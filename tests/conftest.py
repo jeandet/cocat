@@ -8,7 +8,6 @@ from uuid import uuid4
 import anyio
 import httpx
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from nicegui.testing.user import User as SimulatedUser
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +55,12 @@ async def session(tmp_path):
         yield session
 
 
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so every async test uses that backend."""
+    return "asyncio"
+
+
 @dataclass
 class AppClient:
     client: TestClient
@@ -74,7 +79,7 @@ def app_client(update_dir: str, db_path: str) -> Iterator[AppClient]:
 @dataclass
 class UI:
     user: SimulatedUser
-    app: FastAPI
+    cocat: CocatApp
     db_path: str
     update_dir: str
     email: str = "ui@test.org"
@@ -87,8 +92,14 @@ class UI:
 @pytest.fixture()
 async def ui(update_dir: str, db_path: str) -> AsyncIterator[UI]:
     await _create_user(UI.email, UI.password, False, db_path)
-    async with ui_simulation(lambda: CocatApp(update_dir, db_path).app) as (app, user):
-        yield UI(user=user, app=app, db_path=db_path, update_dir=update_dir)
+    built: list[CocatApp] = []
+
+    def make_app():
+        built.append(CocatApp(update_dir, db_path))
+        return built[-1].app
+
+    async with ui_simulation(make_app) as (_, user):
+        yield UI(user=user, cocat=built[-1], db_path=db_path, update_dir=update_dir)
 
 
 def make_user(db_path: str, email: str, password: str = "pwd") -> None:

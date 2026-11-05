@@ -11,12 +11,6 @@ from cocat.app.storage import remove_room_file, room_file
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio.
-    return "asyncio"
-
-
 def test_room_file_rejects_traversal_but_keeps_legacy_ids(tmp_path):
     for room_id in ("", ".", "..", "../x", "a/b", "a\\b", "a\0b"):
         with pytest.raises(ValueError):

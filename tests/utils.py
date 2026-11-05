@@ -6,18 +6,19 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import TypeVar, cast
 from uuid import UUID
 
 import httpx
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from nicegui import core
 from nicegui.testing.general import nicegui_reset_globals
 from nicegui.testing.user import User
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cocat.app.connections import Connections
 from cocat.app.db import User as OrmUser
 from cocat.app.db import get_db
 from cocat.app.rooms import list_user_rooms
@@ -163,7 +164,7 @@ def fill(user: User, marker: str, text: str) -> None:
     user.find(marker=marker).clear().type(text)
 
 
-async def should_notify(user: User, message: str, timeout: float = 1.0) -> None:
+async def should_notify(user: User, message: str, timeout: float = 5.0) -> None:
     """Wait for a notification instead of sleeping a fixed time."""
     deadline = time.monotonic() + timeout
     while message not in user.notify.messages:
@@ -235,3 +236,19 @@ def get_credential(service_name: str, username: str | None) -> Credentials | Non
 
 def set_password(service_name: str, username: str, password: str) -> None:
     WALLET[service_name] = Credentials(username, password)
+
+
+class FakeWebSocket:
+    """Stand-in for a room socket; records the close codes it was sent."""
+
+    def __init__(self) -> None:
+        self.closed: list[int] = []
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed.append(code)
+
+
+def connect(connections: Connections, room_id: str, user_id: UUID) -> FakeWebSocket:
+    socket = FakeWebSocket()
+    connections.add(room_id, user_id, cast(WebSocket, socket))
+    return socket

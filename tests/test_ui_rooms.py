@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from conftest import UI
 from nicegui.client import Client
+from nicegui.elements.html import Html
 from sqlalchemy.ext.asyncio import AsyncSession
 from utils import (
     click,
@@ -22,12 +23,6 @@ from cocat.app.rooms import add_member, create_room
 from cocat.cli import _create_user
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio
-    return "asyncio"
 
 
 async def rooms_of(ui: UI) -> dict[str, str]:
@@ -85,6 +80,19 @@ async def test_signed_out_page_does_not_leak_a_client(ui: UI) -> None:
         response = await ui.user.http_client.get("/ui/rooms", follow_redirects=False)
         assert response.status_code == 307
         assert response.headers["location"].startswith("/ui/login?next=")
+
+    assert not Client.instances
+
+
+async def test_redirect_pages_do_not_leak_a_client(ui: UI) -> None:
+    for path in ("/ui/", "/ui/"):
+        response = await ui.user.http_client.get(path, follow_redirects=False)
+        assert response.status_code == 307
+
+    await ui.log_in()
+    for _ in range(2):
+        response = await ui.user.http_client.get("/ui/login", follow_redirects=False)
+        assert response.status_code == 307
 
     assert not Client.instances
 
@@ -165,6 +173,9 @@ async def test_owner_sees_no_leave(signed_in: UI) -> None:
 
 async def test_header_offers_logout(signed_in: UI) -> None:
     await signed_in.user.should_see(marker="logout")
+    logout = next(iter(signed_in.user.find(marker="logout").elements))
+    assert isinstance(logout, Html)
+    assert 'action="/ui/logout"' in logout.content
 
 
 async def test_action_is_refused_after_deactivation(signed_in: UI) -> None:

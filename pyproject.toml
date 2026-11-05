@@ -68,7 +68,7 @@ server = [
   "fastapi-users[sqlalchemy] >=15.0.1,<16.0.0",
   "anycorn >=0.18.2,<0.21.0",
   "aiosqlite >=0.21.0,<0.23.0",
-  "nicegui >=3.9,<4",
+  "nicegui >=3.19,<4",
 ]
 
 [project.scripts]

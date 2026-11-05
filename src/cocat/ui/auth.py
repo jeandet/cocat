@@ -38,7 +38,15 @@ def safe_next(request: Request, value: str | None) -> str:
     parts = urlsplit(value)
     if parts.scheme or parts.netloc or "\\" in value:
         return default
-    return value if parts.path.startswith("/") else default
+    # Browsers collapse extra leading slashes, so `///host` is `//host` to them,
+    # and `urlsplit` hides the first two of them, hence the raw check too.
+    if (
+        value.startswith("//")
+        or not parts.path.startswith("/")
+        or parts.path.startswith("//")
+    ):
+        return default
+    return value
 
 
 def login_form(action: str, error: str | None) -> str:

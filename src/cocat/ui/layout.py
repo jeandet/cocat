@@ -1,7 +1,7 @@
 import os
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import Request, status
 from fastapi.responses import RedirectResponse
@@ -43,12 +43,27 @@ def public_base(request: Request) -> str:
     """
     configured = os.environ.get("COCAT_PUBLIC_URL")
     if configured:
-        return configured.rstrip("/")
+        # Only the origin: a path here would duplicate the proxy prefix that
+        # `ui_url` already put in every link.
+        parts = urlsplit(configured)
+        return f"{parts.scheme}://{parts.netloc}"
     return f"{request.url.scheme}://{request.url.netloc}"
 
 
 def absolute_url(request: Request, path: str) -> str:
     return public_base(request) + ui_url(request, path)
+
+
+def redirect_page(
+    target: str, status_code: int = status.HTTP_307_TEMPORARY_REDIRECT
+) -> RedirectResponse:
+    """Leave a page before it renders, dropping the client NiceGUI made for it.
+
+    A client is collected when its socket disconnects, which never happens for a
+    page that redirects away, so every redirect would otherwise leak one.
+    """
+    context.client.delete()
+    return RedirectResponse(target, status_code)
 
 
 async def current_user(ctx: UIContext, request: Request) -> User | None:
@@ -58,19 +73,11 @@ async def current_user(ctx: UIContext, request: Request) -> User | None:
 
 
 async def require_user(ctx: UIContext, request: Request) -> User | RedirectResponse:
-    """The signed-in user, or a redirect to the login page.
-
-    The page's client is deleted before redirecting: NiceGUI creates one per page
-    request and only collects it when a socket disconnects, which never happens
-    for a page that redirects away, so every signed-out visit would leak one.
-    """
+    """The signed-in user, or a redirect to the login page."""
     user = await current_user(ctx, request)
     if user is not None:
         return user
-    context.client.delete()
-    return RedirectResponse(
-        login_link(request, request.url.path), status.HTTP_307_TEMPORARY_REDIRECT
-    )
+    return redirect_page(login_link(request, request.url.path))
 
 
 def page_header(request: Request, user: User) -> None:
@@ -117,6 +124,20 @@ async def act(
         return True
 
     return await perform(ctx, capture) is True
+
+
+async def leave_room(ctx: UIContext, room_id: str) -> bool:
+    """Drop the actor's membership through the action layer, not the bare service.
+
+    Going through `RoomActions` also closes the leaver's room socket; without it
+    a member who leaves keeps a live connection to a room they no longer own.
+    """
+    return await act(
+        ctx,
+        lambda session, user: ctx.actions.remove_member(
+            session, room_id, user, user.id
+        ),
+    )
 
 
 class ConfirmDialog:

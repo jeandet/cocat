@@ -6,6 +6,7 @@ from nicegui.elements.input import Input
 from sqlalchemy.ext.asyncio import AsyncSession
 from utils import (
     click,
+    connect,
     ensure_user,
     in_session,
     rooms_of,
@@ -24,12 +25,6 @@ from cocat.app.invitations import (
 from cocat.app.rooms import add_member, create_room, remove_member
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio
-    return "asyncio"
 
 
 async def shared_room(db_path: str, owner_email: str, member_email: str) -> str:
@@ -87,7 +82,7 @@ async def test_owner_sees_members(ui: UI) -> None:
     await open_room(ui, await personal_room(ui))
     owner_id = await user_id(ui.db_path, ui.email)
 
-    await ui.user.should_see(ui.email)
+    await ui.user.should_see(marker=f"member-{owner_id}", content=ui.email)
     await ui.user.should_see("owner")
     await ui.user.should_see(marker="create-invitation")
     await ui.user.should_not_see(marker=f"remove-{owner_id}")
@@ -146,7 +141,8 @@ async def test_create_share_link(ui: UI) -> None:
 
 
 async def test_share_link_uses_the_public_url(ui: UI, monkeypatch) -> None:
-    monkeypatch.setenv("COCAT_PUBLIC_URL", "https://cocat.example.org/")
+    # A path in COCAT_PUBLIC_URL would duplicate the proxy prefix.
+    monkeypatch.setenv("COCAT_PUBLIC_URL", "https://cocat.example.org/cocat/")
     await open_room(ui, await personal_room(ui))
 
     click(ui.user, "create-invitation")
@@ -157,11 +153,13 @@ async def test_share_link_uses_the_public_url(ui: UI, monkeypatch) -> None:
 async def test_share_link_copies(ui: UI) -> None:
     await open_room(ui, await personal_room(ui))
     click(ui.user, "create-invitation")
-    await should_notify(ui.user, "Share link created")
+    await ui.user.should_see("https://testserver/ui/invitation#", retries=30)
+    link = value_of(ui, "share-link")
 
     click(ui.user, "copy-link")
 
     await should_notify(ui.user, "Link copied")
+    assert value_of(ui, "share-link") == link
 
 
 async def test_revoke_invitation(ui: UI) -> None:
@@ -224,9 +222,11 @@ async def test_leave_the_room(ui: UI) -> None:
     owner_email = f"owner-{uuid4().hex}@foo.com"
     room_id = await shared_room(ui.db_path, owner_email, ui.email)
     await open_room(ui, room_id)
+    socket = connect(ui.cocat.connections, room_id, await user_id(ui.db_path, ui.email))
 
     click(ui.user, "leave-room")
     click(ui.user, "confirm")
 
     await should_notify(ui.user, "You left the room")
+    assert socket.closed == [1008]
     await ui.user.should_not_see(marker=f"room-{room_id}", retries=10)

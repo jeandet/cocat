@@ -4,12 +4,6 @@ from conftest import UI
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture()
-def anyio_backend() -> str:
-    # aiosqlite only runs on asyncio
-    return "asyncio"
-
-
 async def test_login_page_is_served(ui: UI) -> None:
     await ui.user.open("/ui/login")
     await ui.user.should_see("Sign in")
