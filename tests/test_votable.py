@@ -212,3 +212,24 @@ def test_each_catalogue_keeps_its_own_attributes():
         ),
         key=lambda attributes: sorted(attributes),
     ) == [{"bar": 2.0}, {"foo": 1.0}]
+
+
+def test_an_unrated_event_stays_unrated():
+    db = DB()
+    catalogue = db.create_catalogue(name="mixed", author="John")
+    unrated = db.create_event(start=0, stop=1, author="John")
+    zero = db.create_event(start=2, stop=3, author="John", rating=0)
+    catalogue.add_events([unrated, zero])
+
+    xml = export_votable_str(catalogue)
+
+    assert "<TD/>" in xml
+    imported = DB()
+    import_votable_str(xml, imported)
+    ratings = [
+        event.rating for catalogue in imported.catalogues for event in catalogue.events
+    ]
+    assert sorted(ratings, key=lambda rating: -1 if rating is None else rating) == [
+        None,
+        0,
+    ]
