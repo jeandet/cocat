@@ -55,12 +55,6 @@ async def session(tmp_path):
         yield session
 
 
-@pytest.fixture()
-def anyio_backend() -> str:
-    """aiosqlite only runs on asyncio, so every async test uses that backend."""
-    return "asyncio"
-
-
 @dataclass
 class AppClient:
     client: TestClient

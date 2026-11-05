@@ -94,3 +94,9 @@ async def test_change_is_refused_after_deactivation(ui: UI) -> None:
     await should_notify(ui.user, "Please sign in again")
     await set_active(ui.db_path, ui.email, True)
     assert await password_works(ui, ui.password)
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"

@@ -248,3 +248,9 @@ async def test_delete_room_removes_memberships(session, owner, editor):
     )
     assert await session.scalar(rooms) == 0
     assert await session.scalar(memberships) == 0
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"

@@ -205,3 +205,9 @@ async def test_a_browser_that_never_answers_still_gets_the_paste_box(
 
     await ui.user.should_see("Join a room")
     await ui.user.should_see(marker="paste-link")
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"

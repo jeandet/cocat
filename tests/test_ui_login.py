@@ -170,3 +170,9 @@ async def test_logout_without_a_cookie(ui: UI) -> None:
 
     assert response.status_code == 303
     assert response.headers["location"] == "/ui/login"
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"

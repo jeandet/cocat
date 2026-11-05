@@ -230,3 +230,9 @@ async def test_leave_the_room(ui: UI) -> None:
     await should_notify(ui.user, "You left the room")
     assert socket.closed == [1008]
     await ui.user.should_not_see(marker=f"room-{room_id}", retries=10)
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"

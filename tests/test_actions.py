@@ -46,3 +46,9 @@ async def test_remove_member_closes_that_socket(
     assert member_socket.closed == [1008]
     assert owner_socket.closed == []
     assert await get_role(session, room.id, member.id) is None
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"

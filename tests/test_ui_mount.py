@@ -28,3 +28,9 @@ async def test_login_page_redirects_a_signed_in_visitor(ui: UI) -> None:
 async def test_login_page_shows_an_error(ui: UI) -> None:
     await ui.user.open("/ui/login?error=credentials")
     await ui.user.should_see("Wrong email or password.")
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"

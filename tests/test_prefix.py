@@ -71,3 +71,9 @@ async def test_pages_work_behind_a_proxy_prefix(
         )
         assert handshake.status_code == 200
         assert handshake.text.startswith("0{")
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"

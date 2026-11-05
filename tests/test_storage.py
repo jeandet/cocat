@@ -84,3 +84,9 @@ async def test_stored_room_removes_its_file_only_for_a_deleted_room(tmp_path):
 
     await stored_room.remove_file_if_room_deleted()
     assert not path.exists()
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"

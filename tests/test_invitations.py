@@ -244,3 +244,9 @@ async def test_concurrent_accept_single_use(tmp_path):
         )
     assert uses == 1
     assert members == 2
+
+
+@pytest.fixture()
+def anyio_backend() -> str:
+    """aiosqlite only runs on asyncio, so these tests cannot use trio."""
+    return "asyncio"
