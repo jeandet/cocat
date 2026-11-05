@@ -25,7 +25,6 @@ from .rooms import (
     list_members,
     list_user_rooms,
     rename_room,
-    set_member_role,
     transfer_ownership,
 )
 from .schemas import (
@@ -134,7 +133,7 @@ def make_api_router(
         user: User = current_user,
         session: AsyncSession = session_dependency,
     ) -> None:
-        await set_member_role(session, room_id, user, user_id, Role(body.role))
+        await actions.set_member_role(session, room_id, user, user_id, Role(body.role))
 
     @router.delete(
         "/rooms/{room_id}/members/{user_id}",

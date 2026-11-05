@@ -10,7 +10,7 @@ from .connections import Connections
 from .db import Invitation, Role, Room, User
 from .invitations import INVITATION_LIFETIME, create_invitation
 from .mail import Mailer, MailError, invitation_mail, is_placeholder
-from .rooms import RoomError, delete_room, remove_member
+from .rooms import RoomError, delete_room, remove_member, set_member_role
 from .storage import remove_room_file
 from .urls import absolute_url
 
@@ -35,6 +35,18 @@ class RoomActions:
         await delete_room(session, room_id, actor)
         await self.connections.close(room_id)
         remove_room_file(self.update_dir, room_id)
+
+    async def set_member_role(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        actor: User,
+        member_id: UUID,
+        role: Role,
+    ) -> None:
+        """Change a member's role and drop the sockets their old role allowed."""
+        await set_member_role(session, room_id, actor, member_id, role)
+        await self.connections.close(room_id, member_id)
 
     async def remove_member(
         self,

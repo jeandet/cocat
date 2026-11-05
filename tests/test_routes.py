@@ -522,3 +522,63 @@ def test_a_viewer_still_receives_an_update_from_the_owner(
             owner.send_bytes(document_update())
 
             assert content_of(viewer.receive_bytes()) == {"key": "value"}
+
+
+def member_id_of(app: AppClient, room_id: str, email: str) -> str:
+    return next(
+        member["user_id"]
+        for member in list_members(app, room_id)
+        if member["email"] == email
+    )
+
+
+def test_changing_a_members_role_closes_their_socket(app_client):
+    make_user(app_client.db_path, "owner@x.org")
+    make_user(app_client.db_path, "member@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    join_room(app_client, "member@x.org", invite(app_client, room["id"]))
+    member_id = member_id_of(app_client, room["id"], "member@x.org")
+
+    login(app_client.client, "member@x.org")
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as websocket:
+        assert websocket.receive_bytes()
+
+        login(app_client.client, "owner@x.org")
+        response = app_client.client.patch(
+            f"/api/rooms/{room['id']}/members/{member_id}", json={"role": "editor"}
+        )
+        assert response.status_code == 204
+
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            websocket.receive_bytes()
+        assert excinfo.value.code == 1008
+
+
+def test_changing_a_role_does_not_close_other_members(app_client):
+    make_user(app_client.db_path, "owner@x.org")
+    make_user(app_client.db_path, "member@x.org")
+    make_user(app_client.db_path, "other@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    tokens = [invite(app_client, room["id"]) for _ in range(2)]
+    for email, token in zip(("member@x.org", "other@x.org"), tokens):
+        join_room(app_client, email, token)
+    member_id = member_id_of(app_client, room["id"], "member@x.org")
+
+    login(app_client.client, "other@x.org")
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as websocket:
+        assert websocket.receive_bytes()
+
+        login(app_client.client, "owner@x.org")
+        response = app_client.client.patch(
+            f"/api/rooms/{room['id']}/members/{member_id}", json={"role": "editor"}
+        )
+        assert response.status_code == 204
+
+        websocket.send_bytes(create_sync_message(Doc()))
+        assert websocket.receive_bytes()

@@ -185,3 +185,22 @@ async def test_invite_forwards_the_requested_lifetime(
 
     [invitation] = await list_invitations(session, room.id, owner)
     assert invitation.expires_at < utcnow() + timedelta(days=4)
+
+
+async def test_set_member_role_closes_that_socket(
+    session: AsyncSession, update_dir: str
+) -> None:
+    owner = await make_orm_user(session, "owner@example.com")
+    member = await make_orm_user(session, "member@example.com")
+    room = await create_room(session, owner, "Room")
+    await add_member(session, room.id, member.id, Role.editor)
+    connections = Connections()
+    member_socket = connect(connections, room.id, member.id)
+    owner_socket = connect(connections, room.id, owner.id)
+    actions = RoomActions(connections, update_dir)
+
+    await actions.set_member_role(session, room.id, owner, member.id, Role.viewer)
+
+    assert member_socket.closed == [1008]
+    assert owner_socket.closed == []
+    assert await get_role(session, room.id, member.id) is Role.viewer
