@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-import numpy as np
-
 from .catalogue import Catalogue
 from .db import DB, Event
 
@@ -82,7 +80,7 @@ VOTABLE_COCAT_FIELDS = [
         int,
         {"datatype": "long"},
         lambda x: 0 if x is None else x,
-        int,
+        lambda x: None if x == 0 else x,
         "rating",
     ),
     _VOTableCocatField(int, {"datatype": "long"}, int, int),
@@ -195,8 +193,6 @@ def export_votable(catalogues: Sequence[Catalogue] | Catalogue) -> "VOTableFile"
                     v = list(v)
                 values.append(vtf.convert_vot(v))
             table.array[i] = tuple(values)
-            if getattr(event, "rating", None) is None:
-                table.array["rating"].mask[i] = True
 
     return votable
 
@@ -273,12 +269,10 @@ def import_votable(
                 event["uuid"] = str(uuid4())
 
             for (index, name), vtf in fields_vs_index.items():
-                cell = el[index]
-                cell_value = None if cell is np.ma.masked else vtf.convert_cocat(cell)
                 if name in STANDARD_FIELDS:
-                    event[name] = cell_value
+                    event[name] = vtf.convert_cocat(el[index])
                 else:
-                    event["attributes"][name] = cell_value
+                    event["attributes"][name] = vtf.convert_cocat(el[index])
 
             if event["uuid"] not in seen_uuids:
                 seen_uuids.add(event["uuid"])
