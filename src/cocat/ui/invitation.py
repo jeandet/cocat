@@ -3,7 +3,7 @@ from nicegui import ui
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..app.db import User
-from ..app.invitations import accept_invitation, preview_invitation
+from ..app.invitations import preview_invitation
 from ..app.rooms import RoomError
 from .context import UIContext
 from .layout import current_user, login_link, page_header, perform, ui_url
@@ -23,7 +23,9 @@ def register(ctx: UIContext) -> None:
         state = {"token": token}
 
         async def join(session: AsyncSession, actor: User) -> tuple[str, str]:
-            room, _ = await accept_invitation(session, state["token"], actor)
+            room, _ = await ctx.actions.accept_invitation(
+                session, state["token"], actor
+            )
             return room.id, room.name
 
         async def accept() -> None:

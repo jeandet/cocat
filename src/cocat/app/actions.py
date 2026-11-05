@@ -8,9 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .connections import Connections
 from .db import Invitation, Role, Room, User
-from .invitations import INVITATION_LIFETIME, create_invitation
+from .invitations import INVITATION_LIFETIME, accept_invitation, create_invitation
 from .mail import Mailer, MailError, invitation_mail, is_placeholder
-from .rooms import RoomError, delete_room, remove_member, set_member_role
+from .rooms import (
+    RoomError,
+    delete_room,
+    remove_member,
+    set_member_role,
+    transfer_ownership,
+)
 from .storage import remove_room_file
 from .urls import absolute_url
 
@@ -57,6 +63,36 @@ class RoomActions:
     ) -> None:
         await remove_member(session, room_id, actor, member_id)
         await self.connections.close(room_id, member_id)
+
+    async def transfer_ownership(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        actor: User,
+        member_id: UUID,
+    ) -> None:
+        """Make a member the owner and drop their sockets.
+
+        The role decides what a socket may write when it connects, so a member
+        promoted mid-session keeps the older role until it reconnects.
+        """
+        await transfer_ownership(session, room_id, actor, member_id)
+        await self.connections.close(room_id, member_id)
+
+    async def accept_invitation(
+        self,
+        session: AsyncSession,
+        token: str,
+        user: User,
+    ) -> tuple[Room, Role]:
+        """Join the room an invitation points at, dropping the user's sockets.
+
+        An invitation can raise an existing member's role, and that member may
+        already have a socket open with the older one.
+        """
+        room, role = await accept_invitation(session, token, user)
+        await self.connections.close(room.id, user.id)
+        return room, role
 
     async def invite(
         self,

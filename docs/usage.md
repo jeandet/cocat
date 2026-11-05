@@ -186,9 +186,11 @@ page mails a new password link only when a relay is configured.
 | `/ui/confirm-email` | give an address to an account that signed in with a provider that hides it |
 
 A `viewer` can read a room and follow what other members change, but the server drops every
-edit that viewer sends: the role is enforced on the websocket, not in the page. A role
-change closes that member's connection, so the new role applies immediately instead of
-when the browser reconnects.
+edit that viewer sends: the role is enforced on the websocket, not in the page. A client
+that draws a viewer's room must therefore stop accepting edits locally, or the user types
+into a copy that never reaches the room. A role change closes that member's connection
+(the owner picking another role, an ownership transfer, or an invitation that raises the
+role), so the new role applies immediately instead of when the browser reconnects.
 
 A share link looks like `http://127.0.0.1:8000/ui/invitation#<token>`: the token is in the
 URL fragment, which the browser keeps to itself, so it never reaches a server log. The

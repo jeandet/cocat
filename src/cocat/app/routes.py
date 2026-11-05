@@ -9,7 +9,6 @@ from .actions import RoomActions
 from .connections import Connections
 from .db import DB, Role, User
 from .invitations import (
-    accept_invitation,
     create_invitation,
     list_invitations,
     preview_invitation,
@@ -25,7 +24,6 @@ from .rooms import (
     list_members,
     list_user_rooms,
     rename_room,
-    transfer_ownership,
 )
 from .schemas import (
     InvitationCreate,
@@ -154,7 +152,7 @@ def make_api_router(
         user: User = current_user,
         session: AsyncSession = session_dependency,
     ) -> None:
-        await transfer_ownership(session, room_id, user, body.user_id)
+        await actions.transfer_ownership(session, room_id, user, body.user_id)
 
     @router.post(
         "/rooms/{room_id}/invitations",
@@ -227,7 +225,7 @@ def make_api_router(
         user: User = current_user,
         session: AsyncSession = session_dependency,
     ) -> RoomOut:
-        room, role = await accept_invitation(session, body.token, user)
+        room, role = await actions.accept_invitation(session, body.token, user)
         return RoomOut(id=room.id, name=room.name, role=role)
 
     return router

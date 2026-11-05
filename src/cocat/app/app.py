@@ -35,13 +35,13 @@ from .oauth import (
 )
 from .prefix import PrefixPath
 from .ratelimit import RateLimiter, limit, load_trusted_proxies
-from .rooms import RoomError, list_members, list_user_rooms
+from .rooms import RoomError, get_role, list_members, list_user_rooms
 from .routes import make_api_router, room_error_handler
 from .schemas import RoomUsers, UserCreate, UserRead, UserRooms, UserUpdate
 from .secret import load_secret
 from .storage import remove_room_file, room_file
 from .users import get_backend
-from .yjs import ReadOnlyChannel
+from .yjs import RoomChannel
 
 
 def with_route_dependency(
@@ -192,24 +192,32 @@ class CocatApp:  # pragma: nocover
             prefix="/api",
         )
 
+        async def role_in(room_id: str, user_id: Any) -> Role | None:
+            async with db.async_session_maker() as session:
+                return await get_role(session, room_id, user_id)
+
         @app.websocket("/room/{room_id}")
         async def connect_room(
             room_id: str,
-            authenticated: tuple[WebSocket, User, Role] | None = Depends(
+            authenticated: tuple[WebSocket, User] | None = Depends(
                 backend.websocket_auth
             ),
         ):
             if authenticated is None:
                 return
 
-            websocket, user, role = authenticated
+            websocket, user = authenticated
             await websocket.accept()
             self.connections.add(room_id, user.id, websocket)
             try:
+                role = await role_in(room_id, user.id)
+                if role is None:
+                    await websocket.close(code=1008)
+                    return
                 ywebsocket = YWebSocket(websocket, room_id)
                 room = await self.room_manager.get_room(ywebsocket.id)
-                channel: AsyncChannel = (
-                    ReadOnlyChannel(ywebsocket) if role is Role.viewer else ywebsocket
+                channel: AsyncChannel = RoomChannel(
+                    ywebsocket, writes=role is not Role.viewer
                 )
                 await room.serve(channel)
             finally:

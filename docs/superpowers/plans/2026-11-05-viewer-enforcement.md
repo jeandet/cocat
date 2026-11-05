@@ -131,14 +131,16 @@ coverage with `--fail-under=100`, ruff, mypy.
    per-frame DB reads, no shared mutable role state, one code path for "access changed
    while connected" that already exists. A kick also matches the UI, which reconnects
    and re-renders.
-7. **No kick on `transfer_ownership`** (owner and editor both write; the new owner needs
-   no new permission on the websocket) and **no kick on `accept_invitation`** (the
-   invitation path only ever *raises* a role through `_add_member`, so an open socket's
-   snapshot is stale-low, never stale-high). Both are recorded here so a reviewer does
-   not read the omission as an oversight.
-8. **`websocket_auth` returns the role it already fetched.** It calls `get_role` for the
-   membership check; returning it avoids a second query and keeps the route free of DB
-   access.
+7. **`transfer_ownership` and `accept_invitation` also kick** (corrected after review:
+   the new owner may have been a viewer, and their open socket was built read-only, so
+   a transfer that did not kick left the owner unable to write; an invitation can raise
+   an existing member's role the same way). Both go through `RoomActions`, so the kick
+   has one home.
+8. **The role is read after the socket is registered, not in `websocket_auth`**
+   (corrected after review: a downgrade committed during the handshake found nothing to
+   close and left a write-capable socket for its whole life; reading after
+   `connections.add` means such a change either lands before the read or finds the
+   socket). `websocket_auth` keeps using `get_role` for the membership check.
 
 ## Global constraints
 

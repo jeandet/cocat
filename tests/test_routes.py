@@ -1,4 +1,6 @@
+import threading
 from pathlib import Path
+from uuid import UUID
 
 import anyio
 import pytest
@@ -10,6 +12,7 @@ from conftest import (
     make_user,
     ws_headers,
 )
+from fastapi import WebSocket
 from fastapi.testclient import TestClient
 from pycrdt import (
     Doc,
@@ -21,12 +24,19 @@ from pycrdt import (
     handle_sync_message,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
-from utils import RecordingMail, clean_nicegui, in_session, user_by_email
+from utils import (
+    RecordingMail,
+    clean_nicegui,
+    ensure_user,
+    in_session,
+    user_by_email,
+)
 
 from cocat.app.app import CocatApp
 from cocat.app.db import Role
-from cocat.app.rooms import add_member
+from cocat.app.rooms import add_member, set_member_role
 from cocat.app.storage import room_file
 
 
@@ -52,6 +62,65 @@ def join_room(app: AppClient, email: str, token: str) -> None:
     login(app.client, email)
     response = app.client.post("/api/invitations/accept", json={"token": token})
     assert response.status_code == 200
+
+
+def document_update() -> bytes:
+    document: Doc = Doc()
+    content: Map = document.get("content", type=Map)
+    content["key"] = "value"
+    return create_update_message(document.get_update())
+
+
+def state_of(frame: bytes) -> dict:
+    document: Doc = Doc()
+    content: Map = document.get("content", type=Map)
+    handle_sync_message(frame[1:], document)
+    return {"key": content["key"]} if "key" in content else {}
+
+
+def content_of(frame: bytes) -> dict:
+    assert frame[0] == YMessageType.SYNC
+    assert frame[1] == YSyncMessageType.SYNC_UPDATE
+    return state_of(frame)
+
+
+def content_after_sync_request(websocket: WebSocketTestSession) -> dict:
+    """Ask for the room state; an empty room answers with an empty map.
+
+    The loop is bounded, so a room that stops answering fails the test instead
+    of hanging the suite.
+    """
+    websocket.send_bytes(create_sync_message(Doc()))
+    answers = (
+        frame
+        for frame in (websocket.receive_bytes() for _ in range(10))
+        if frame[0] == YMessageType.SYNC and frame[1] == YSyncMessageType.SYNC_STEP2
+    )
+    return state_of(next(answers))
+
+
+def member_id_of(app: AppClient, room_id: str, email: str) -> str:
+    return next(
+        member["user_id"]
+        for member in list_members(app, room_id)
+        if member["email"] == email
+    )
+
+
+def add_member_with(app: AppClient, room_id: str, email: str, role: Role) -> None:
+    anyio.run(ensure_user, app.db_path, email)
+
+    async def add(session: AsyncSession) -> None:
+        member = await user_by_email(session, email)
+        await add_member(session, room_id, member.id, role)
+
+    anyio.run(in_session, app.db_path, add)
+
+
+def invite_as(app: AppClient, room_id: str, role: str) -> str:
+    response = app.client.post(f"/api/rooms/{room_id}/invitations", json={"role": role})
+    assert response.status_code == 201
+    return response.json()["token"]
 
 
 def test_create_list_rename_delete_room(app_client):
@@ -325,7 +394,10 @@ def test_websocket_does_not_hold_a_db_connection(tmp_path):
 
             with client.websocket_connect(
                 f"/room/{room['id']}", headers=ws_headers(client)
-            ):
+            ) as websocket:
+                # The first frame means the route finished reading the role.
+                websocket.receive_bytes()
+
                 assert cocat_app.db.engine.pool.checkedout() == 0
 
 
@@ -468,35 +540,6 @@ def test_a_mailer_needs_a_public_url(
             CocatApp(update_dir, db_path, mail=RecordingMail())
 
 
-def document_update() -> bytes:
-    document: Doc = Doc()
-    content: Map = document.get("content", type=Map)
-    content["key"] = "value"
-    return create_update_message(document.get_update())
-
-
-def content_after_sync_request(websocket) -> dict:
-    websocket.send_bytes(create_sync_message(Doc()))
-    while True:
-        frame = websocket.receive_bytes()
-        if frame[0] != YMessageType.SYNC or frame[1] != YSyncMessageType.SYNC_STEP2:
-            continue
-        document: Doc = Doc()
-        content: Map = document.get("content", type=Map)
-        handle_sync_message(frame[1:], document)
-        return {"key": content["key"]} if "key" in content else {}
-
-
-def add_member_with(app: AppClient, room_id: str, email: str, role: Role) -> None:
-    make_user(app.db_path, email)
-
-    async def add(session: AsyncSession) -> None:
-        member = await user_by_email(session, email)
-        await add_member(session, room_id, member.id, role)
-
-    anyio.run(in_session, app.db_path, add)
-
-
 def test_a_viewer_cannot_write_to_the_room(app_client: AppClient) -> None:
     make_user(app_client.db_path, "owner@x.org")
     login(app_client.client, "owner@x.org")
@@ -531,13 +574,23 @@ def test_an_editor_can_write_to_the_room(app_client: AppClient) -> None:
         assert content_after_sync_request(websocket) == {"key": "value"}
 
 
-def content_of(frame: bytes) -> dict:
-    assert frame[0] == YMessageType.SYNC
-    assert frame[1] == YSyncMessageType.SYNC_UPDATE
-    document: Doc = Doc()
-    content: Map = document.get("content", type=Map)
-    handle_sync_message(frame[1:], document)
-    return {"key": content["key"]} if "key" in content else {}
+def test_a_frame_too_short_to_read_does_not_break_the_socket(
+    app_client: AppClient,
+) -> None:
+    make_user(app_client.db_path, "owner@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as websocket:
+        websocket.receive_bytes()
+
+        websocket.send_bytes(b"")
+        websocket.send_bytes(b"\x00")
+
+        # The room drops the truncated frames and keeps serving this socket.
+        assert content_after_sync_request(websocket) == {}
 
 
 def test_a_viewer_still_receives_an_update_from_the_owner(
@@ -565,15 +618,7 @@ def test_a_viewer_still_receives_an_update_from_the_owner(
             assert content_of(viewer.receive_bytes()) == {"key": "value"}
 
 
-def member_id_of(app: AppClient, room_id: str, email: str) -> str:
-    return next(
-        member["user_id"]
-        for member in list_members(app, room_id)
-        if member["email"] == email
-    )
-
-
-def test_changing_a_members_role_closes_their_socket(app_client):
+def test_downgrading_a_member_closes_their_socket(app_client: AppClient) -> None:
     make_user(app_client.db_path, "owner@x.org")
     make_user(app_client.db_path, "member@x.org")
     login(app_client.client, "owner@x.org")
@@ -585,11 +630,11 @@ def test_changing_a_members_role_closes_their_socket(app_client):
     with app_client.client.websocket_connect(
         f"/room/{room['id']}", headers=ws_headers(app_client.client)
     ) as websocket:
-        assert websocket.receive_bytes()
+        websocket.receive_bytes()
 
         login(app_client.client, "owner@x.org")
         response = app_client.client.patch(
-            f"/api/rooms/{room['id']}/members/{member_id}", json={"role": "editor"}
+            f"/api/rooms/{room['id']}/members/{member_id}", json={"role": "viewer"}
         )
         assert response.status_code == 204
 
@@ -597,8 +642,19 @@ def test_changing_a_members_role_closes_their_socket(app_client):
             websocket.receive_bytes()
         assert excinfo.value.code == 1008
 
+    # The next socket is built from the new role: its writes never land.
+    login(app_client.client, "member@x.org")
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as websocket:
+        websocket.receive_bytes()
 
-def test_changing_a_role_does_not_close_other_members(app_client):
+        websocket.send_bytes(document_update())
+
+        assert content_after_sync_request(websocket) == {}
+
+
+def test_changing_a_role_does_not_close_other_members(app_client: AppClient) -> None:
     make_user(app_client.db_path, "owner@x.org")
     make_user(app_client.db_path, "member@x.org")
     make_user(app_client.db_path, "other@x.org")
@@ -613,13 +669,178 @@ def test_changing_a_role_does_not_close_other_members(app_client):
     with app_client.client.websocket_connect(
         f"/room/{room['id']}", headers=ws_headers(app_client.client)
     ) as websocket:
-        assert websocket.receive_bytes()
+        websocket.receive_bytes()
 
         login(app_client.client, "owner@x.org")
         response = app_client.client.patch(
-            f"/api/rooms/{room['id']}/members/{member_id}", json={"role": "editor"}
+            f"/api/rooms/{room['id']}/members/{member_id}", json={"role": "viewer"}
         )
         assert response.status_code == 204
 
-        websocket.send_bytes(create_sync_message(Doc()))
-        assert websocket.receive_bytes()
+        # Still connected: the room answers this member's sync request.
+        assert content_after_sync_request(websocket) == {}
+
+
+def test_an_editor_cannot_change_a_role(app_client: AppClient) -> None:
+    make_user(app_client.db_path, "owner@x.org")
+    make_user(app_client.db_path, "editor@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    join_room(app_client, "editor@x.org", invite(app_client, room["id"]))
+    owner_id = member_id_of(app_client, room["id"], "owner@x.org")
+
+    login(app_client.client, "editor@x.org")
+    response = app_client.client.patch(
+        f"/api/rooms/{room['id']}/members/{owner_id}", json={"role": "viewer"}
+    )
+
+    assert response.status_code == 403
+
+
+def test_a_kick_does_not_reach_the_same_user_in_another_room(
+    app_client: AppClient,
+) -> None:
+    make_user(app_client.db_path, "owner@x.org")
+    make_user(app_client.db_path, "member@x.org")
+    login(app_client.client, "owner@x.org")
+    first = create_room(app_client, "First")
+    second = create_room(app_client, "Second")
+    tokens = [invite(app_client, room["id"]) for room in (first, second)]
+    for room, token in zip((first, second), tokens):
+        join_room(app_client, "member@x.org", token)
+    member_id = member_id_of(app_client, first["id"], "member@x.org")
+
+    login(app_client.client, "member@x.org")
+    with app_client.client.websocket_connect(
+        f"/room/{first['id']}", headers=ws_headers(app_client.client)
+    ) as kicked:
+        kicked.receive_bytes()
+
+        with app_client.client.websocket_connect(
+            f"/room/{second['id']}", headers=ws_headers(app_client.client)
+        ) as kept:
+            kept.receive_bytes()
+
+            login(app_client.client, "owner@x.org")
+            response = app_client.client.patch(
+                f"/api/rooms/{first['id']}/members/{member_id}", json={"role": "viewer"}
+            )
+            assert response.status_code == 204
+
+            with pytest.raises(WebSocketDisconnect):
+                kicked.receive_bytes()
+            assert content_after_sync_request(kept) == {}
+
+
+def test_transferring_ownership_kicks_the_new_owner(app_client: AppClient) -> None:
+    make_user(app_client.db_path, "owner@x.org")
+    make_user(app_client.db_path, "viewer@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    add_member_with(app_client, room["id"], "viewer@x.org", Role.viewer)
+    viewer_id = member_id_of(app_client, room["id"], "viewer@x.org")
+
+    login(app_client.client, "viewer@x.org")
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as websocket:
+        websocket.receive_bytes()
+
+        login(app_client.client, "owner@x.org")
+        response = app_client.client.post(
+            f"/api/rooms/{room['id']}/owner", json={"user_id": viewer_id}
+        )
+        assert response.status_code == 204
+
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            websocket.receive_bytes()
+        assert excinfo.value.code == 1008
+
+
+def test_accepting_an_invitation_that_raises_a_role_kicks_the_member(
+    app_client: AppClient,
+) -> None:
+    make_user(app_client.db_path, "owner@x.org")
+    make_user(app_client.db_path, "member@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    add_member_with(app_client, room["id"], "member@x.org", Role.viewer)
+    upgrade = invite_as(app_client, room["id"], "editor")
+
+    login(app_client.client, "member@x.org")
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as websocket:
+        websocket.receive_bytes()
+
+        response = app_client.client.post(
+            "/api/invitations/accept", json={"token": upgrade}
+        )
+        assert response.status_code == 200
+
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            websocket.receive_bytes()
+        assert excinfo.value.code == 1008
+
+    # The next socket may write.
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as websocket:
+        websocket.receive_bytes()
+
+        websocket.send_bytes(document_update())
+
+        assert content_after_sync_request(websocket) == {"key": "value"}
+
+
+def test_a_downgrade_during_the_handshake_is_honoured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    update_dir = str(tmp_path / "update_dir")
+    Path(update_dir).mkdir()
+    db_path = str(tmp_path / "test.db")
+    with clean_nicegui():
+        cocat_app = CocatApp(update_dir, db_path)
+        with TestClient(cocat_app.app, base_url="https://testserver") as client:
+            app_client = AppClient(
+                client=client, db_path=db_path, update_dir=update_dir
+            )
+            make_user(db_path, "owner@x.org")
+            login(client, "owner@x.org")
+            room = create_room(app_client)
+            add_member_with(app_client, room["id"], "editor@x.org", Role.editor)
+            editor_id = UUID(member_id_of(app_client, room["id"], "editor@x.org"))
+            register = cocat_app.connections.add
+
+            def add_after_downgrading(
+                room_id: str, user_id: UUID, websocket: WebSocket
+            ) -> None:
+                """Downgrade the member once their socket is registered."""
+                register(room_id, user_id, websocket)
+                if user_id == editor_id:
+
+                    async def downgrade(session: AsyncSession) -> None:
+                        owner = await user_by_email(session, "owner@x.org")
+                        await set_member_role(
+                            session, room_id, owner, editor_id, Role.viewer
+                        )
+
+                    # The wrapper runs inside the app's loop, so the write
+                    # needs its own thread and event loop.
+                    worker = threading.Thread(
+                        target=anyio.run, args=(in_session, db_path, downgrade)
+                    )
+                    worker.start()
+                    worker.join()
+
+            monkeypatch.setattr(cocat_app.connections, "add", add_after_downgrading)
+
+            login(client, "editor@x.org")
+            with client.websocket_connect(
+                f"/room/{room['id']}", headers=ws_headers(client)
+            ) as websocket:
+                websocket.receive_bytes()
+
+                websocket.send_bytes(document_update())
+
+                assert content_after_sync_request(websocket) == {}

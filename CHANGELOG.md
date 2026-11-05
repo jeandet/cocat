@@ -5,7 +5,9 @@
   viewer sends, so a viewer reads the room and receives other members' updates but cannot
   change it. Editors are unaffected.
 - A role change closes that member's connections, so a downgrade applies at once instead of
-  when the browser reconnects.
+  when the browser reconnects: the owner picking another role, an ownership transfer (the
+  new owner no longer connects read-only), or an invitation that raises an existing
+  member's role.
 - The API accepts `viewer` for a member's role and for an invitation, and the room page
   offers a role picker for each member and for a new invitation or share link.
 

@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 import pytest
 from conftest import UI
 from nicegui.elements.input import Input
+from nicegui.elements.select import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from utils import (
     click,
@@ -26,6 +27,7 @@ from cocat.app.invitations import (
     list_invitations,
 )
 from cocat.app.rooms import add_member, create_room, get_role, remove_member
+from cocat.ui.token import token_from_text
 
 pytestmark = pytest.mark.anyio
 
@@ -306,16 +308,16 @@ async def add_member_of(ui: UI, room_id: str, email: str, role: Role) -> str:
     return await in_session(ui.db_path, add)
 
 
-async def viewer_room(ui: UI) -> str:
+async def viewer_room(ui: UI) -> tuple[str, str]:
     owner_email = f"owner-{uuid4().hex}@example.org"
     await ensure_user(ui.db_path, owner_email)
 
-    async def share(session: AsyncSession) -> str:
+    async def share(session: AsyncSession) -> tuple[str, str]:
         owner = await user_by_email(session, owner_email)
         room = await create_room(session, owner, f"viewer-{uuid4().hex}")
         viewer = await user_by_email(session, ui.email)
         await add_member(session, room.id, viewer.id, Role.viewer)
-        return room.id
+        return room.id, str(owner.id)
 
     return await in_session(ui.db_path, share)
 
@@ -351,9 +353,52 @@ async def test_the_owner_invites_a_viewer(ui: UI) -> None:
 
 
 async def test_a_viewer_sees_a_read_only_room(ui: UI) -> None:
-    room_id = await viewer_room(ui)
+    room_id, owner_id = await viewer_room(ui)
     await open_room(ui, room_id)
 
     await ui.user.should_see("Your role: viewer", retries=30)
     await ui.user.should_not_see(marker="invite-send")
     await ui.user.should_not_see(marker="create-invitation")
+    await ui.user.should_not_see(marker=f"role-{owner_id}")
+
+
+async def test_changing_a_role_from_the_page_closes_that_socket(ui: UI) -> None:
+    room_id = await personal_room(ui)
+    member = await add_member_of(ui, room_id, "guest@example.org", Role.editor)
+    socket = connect(ui.cocat.connections, room_id, UUID(member))
+    await open_room(ui, room_id)
+    await ui.user.should_see(marker=f"role-{member}", retries=30)
+
+    pick(ui.user, f"role-{member}", "viewer")
+
+    await should_notify(ui.user, "guest@example.org is now a viewer")
+    assert socket.closed == [1008]
+
+
+async def test_a_share_link_grants_the_chosen_role(ui: UI) -> None:
+    room_id = await personal_room(ui)
+    guest_email = f"guest-{uuid4().hex}@example.org"
+    await ensure_user(ui.db_path, guest_email)
+    await open_room(ui, room_id)
+    await ui.user.should_see(marker="invite-role", retries=30)
+
+    pick(ui.user, "invite-role", "viewer")
+    click(ui.user, "create-invitation")
+    await ui.user.should_see("https://testserver/ui/invitation#", retries=30)
+    token = token_from_text(value_of(ui, "share-link"))
+
+    async def join(session: AsyncSession) -> Role:
+        guest = await user_by_email(session, guest_email)
+        _room, role = await accept_invitation(session, token, guest)
+        return role
+
+    assert await in_session(ui.db_path, join) is Role.viewer
+
+
+async def test_an_editor_sees_no_role_picker(ui: UI) -> None:
+    owner_email = f"owner-{uuid4().hex}@example.org"
+    room_id = await shared_room(ui.db_path, owner_email, ui.email)
+    await open_room(ui, room_id)
+    await ui.user.should_see(marker="leave-room", retries=30)
+
+    await ui.user.should_not_see(kind=Select)

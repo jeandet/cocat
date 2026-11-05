@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..app.db import Invitation, Role, Room, User
 from ..app.invitations import create_invitation, list_invitations, revoke_invitation
-from ..app.rooms import get_role, list_members, transfer_ownership
+from ..app.rooms import get_role, list_members
 from ..app.urls import absolute_url
 from .context import UIContext
 from .layout import (
@@ -87,7 +87,7 @@ def register(ctx: UIContext) -> None:
             async def apply() -> None:
                 transferred = await act(
                     ctx,
-                    lambda session, actor: transfer_ownership(
+                    lambda session, actor: ctx.actions.transfer_ownership(
                         session, room_id, actor, member_id
                     ),
                 )
