@@ -1,4 +1,5 @@
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -233,3 +234,25 @@ def test_an_unrated_event_stays_unrated():
         None,
         0,
     ]
+
+
+def test_importing_a_large_file_stays_linear():
+    db = DB()
+    catalogue = db.create_catalogue(name="big", author="John")
+    catalogue.add_events(
+        [db.create_event(start=i, stop=i + 1, author="John") for i in range(4000)]
+    )
+    xml = export_votable_str(catalogue)
+    rows = re.findall(r"<TR>.*?</TR>", xml, re.DOTALL)
+    body = "".join(rows) * 4
+    head, _, rest = xml.partition("<TABLEDATA>")
+    _, _, tail = rest.partition("</TABLEDATA>")
+    doubled = head + "<TABLEDATA>" + body + "</TABLEDATA>" + tail
+
+    imported = DB()
+    started = time.monotonic()
+    import_votable_str(doubled, imported)
+    elapsed = time.monotonic() - started
+
+    assert sum(len(catalogue.events) for catalogue in imported.catalogues) == 4000
+    assert elapsed < 1.2

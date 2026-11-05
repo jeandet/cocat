@@ -224,6 +224,7 @@ def import_votable(
         "catalogues": [],
         "events": [],
     }
+    seen_uuids: set[Any] = set()
 
     for i, table in enumerate(votable.iter_tables()):
         required_field_names: list[str] = ["Start Time", "Stop Time"]
@@ -279,7 +280,8 @@ def import_votable(
                 else:
                     event["attributes"][name] = cell_value
 
-            if not any(event["uuid"] == e["uuid"] for e in db_dict["events"]):
+            if event["uuid"] not in seen_uuids:
+                seen_uuids.add(event["uuid"])
                 db_dict["events"].append(event)
 
             catalogue["events"].append(event["uuid"])  # type: ignore
