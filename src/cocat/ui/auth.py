@@ -13,6 +13,13 @@ from .layout import ui_url
 MESSAGES = {
     "credentials": "Wrong email or password.",
     "too_many": "Too many attempts. Try again in a minute.",
+    "exists": "That email is already registered.",
+    "unverified": "Check your inbox: this account is not verified yet.",
+    "created": "Account created. Check your inbox to verify it.",
+    "reset": "Password changed. Sign in with the new one.",
+    "sent": "If that address has an account, a reset link is on its way.",
+    "mail": "We could not send the email. Ask an administrator.",
+    "email": "That is not an email address.",
 }
 
 
@@ -49,7 +56,12 @@ def safe_next(request: Request, value: str | None) -> str:
     return value
 
 
-def login_form(action: str, error: str | None) -> str:
+def login_form(
+    action: str,
+    error: str | None,
+    sign_up: str = "/ui/signup",
+    reset: str = "/ui/forgot-password",
+) -> str:
     message = MESSAGES.get(error or "", "")
     return f"""
 <form method="post" action="{html.escape(action)}">
@@ -61,7 +73,8 @@ def login_form(action: str, error: str | None) -> str:
   <button type="submit">Log in</button>
   <p class="error">{html.escape(message)}</p>
 </form>
-<p>Accounts are created by an administrator.</p>
+<p><a href="{html.escape(sign_up)}">Sign up</a>
+&middot; <a href="{html.escape(reset)}">Forgot your password?</a></p>
 """
 
 
@@ -127,6 +140,8 @@ def make_auth_router(ctx: UIContext) -> APIRouter:
             )
             if user is None:
                 return redirect(ui_url(request, "/login") + "?error=credentials")
+            if ctx.backend.mail is not None and not user.is_verified:
+                return redirect(ui_url(request, "/login") + "?error=unverified")
             token = await ctx.backend.get_jwt_strategy().write_token(user)
 
         response = redirect(safe_next(request, request.query_params.get("next")))
@@ -147,4 +162,6 @@ def next_query(request: Request) -> str:
 
 
 def error_key(request: Request) -> str | None:
+    if request.query_params.get("created"):
+        return "created"
     return request.query_params.get("error")

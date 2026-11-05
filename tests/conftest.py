@@ -201,3 +201,9 @@ def server(free_tcp_port: int, update_dir: str, db_path: str):
     yield host, free_tcp_port
     os.kill(p.pid, signal.SIGINT)
     p.wait()
+
+
+@pytest.fixture()
+async def ui_mail(update_dir: str, db_path: str) -> AsyncIterator[UI]:
+    async with _simulated_ui(update_dir, db_path, RecordingMail()) as simulated:
+        yield simulated

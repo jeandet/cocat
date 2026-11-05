@@ -20,5 +20,12 @@ def register(ctx: UIContext) -> None:
         # A relative action with the query carried over, so that a proxy
         # terminating TLS cannot turn the form post into mixed content.
         action = ui_url(request, "/login") + next_query(request)
-        ui.html(login_form(action, error_key(request)))
+        ui.html(
+            login_form(
+                action,
+                error_key(request),
+                ui_url(request, "/signup"),
+                ui_url(request, "/forgot-password"),
+            )
+        ).mark("login-form")
         return None

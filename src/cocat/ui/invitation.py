@@ -7,35 +7,7 @@ from ..app.invitations import accept_invitation, preview_invitation
 from ..app.rooms import RoomError
 from .context import UIContext
 from .layout import current_user, login_link, page_header, perform, ui_url
-
-FRAGMENT_SCRIPT = "window.location.hash.replace(/^#/, '')"
-CLEAR_FRAGMENT_SCRIPT = (
-    "history.replaceState(null, '', window.location.pathname + window.location.search)"
-)
-
-
-async def read_fragment_token() -> str:
-    """Ask the browser for its fragment, which never reaches the server.
-
-    A token sent in a path or a query ends up in access logs and in the history
-    of every machine it passes; the answer to this call arrives in a socket
-    message body instead, and only lives in the page's Python scope.
-    """
-    try:
-        value = await ui.run_javascript(FRAGMENT_SCRIPT)
-    except TimeoutError:
-        # A blocked socket or disabled JavaScript must not leave a blank page.
-        return ""
-    return "" if value is None else str(value).strip()
-
-
-def token_from_text(text: str) -> str:
-    """The token of a pasted share link, or the pasted text when it is bare.
-
-    Signing in leaves the page behind and a fragment does not survive that, so a
-    visitor who has to log in first pastes the link again on the page.
-    """
-    return text.partition("#")[2].strip() or text.strip()
+from .token import CLEAR_FRAGMENT_SCRIPT, read_fragment_token, token_from_text
 
 
 def register(ctx: UIContext) -> None:

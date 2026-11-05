@@ -111,10 +111,6 @@ class CocatApp:  # pragma: nocover
             allow_headers=["*"],
         )
 
-        current_superuser = backend.fastapi_users.current_user(
-            active=True, superuser=True
-        )
-
         limiter = RateLimiter(10, 60.0)
         check_limit = limit(limiter, load_trusted_proxies())
 
@@ -126,11 +122,13 @@ class CocatApp:  # pragma: nocover
             prefix="/auth/jwt",
             tags=["auth"],
         )
+        register_router = backend.fastapi_users.get_register_router(
+            UserRead, UserCreate
+        )
         app.include_router(
-            backend.fastapi_users.get_register_router(UserRead, UserCreate),
+            with_route_dependency(register_router, "/register", check_limit),
             prefix="/auth",
             tags=["auth"],
-            dependencies=[Depends(current_superuser)],
         )
         app.include_router(
             with_route_dependency(

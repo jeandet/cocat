@@ -41,7 +41,9 @@ def test_login_form_posts_the_password() -> None:
     assert 'name="password"' in form
     assert 'type="password"' in form
     assert "Log in" in form
-    assert "Accounts are created by an administrator." in form
+    assert 'href="/ui/signup"' in form
+    assert 'href="/ui/forgot-password"' in form
+    assert "administrator" not in form
 
 
 def test_login_form_explains_the_failure() -> None:
