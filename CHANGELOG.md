@@ -1,5 +1,26 @@
 # Version history
 
+## 0.14.0
+
+- An SMTP sender configured from `COCAT_SMTP_*` and `COCAT_MAIL_FROM` sends verification,
+  password-reset and invitation emails. Without it the server runs unchanged: verification
+  is skipped and links stay visible in the UI to copy by hand.
+- Registration is open: the web UI has sign-up, verification, forgot-password and
+  reset-password pages, and `/auth/register` is public and rate limited. Accounts that
+  predate the mailer are marked verified by migration `0003`, and `cocat create-user`
+  creates verified accounts.
+- Sign-in is refused for accounts that have not confirmed their address, once a mailer is
+  configured, through both the API and the UI.
+- Email invitations: `RoomActions.invite` creates the invitation and mails the link, and the
+  room page has an "Invite by email" row. The API only returns the raw token when no mailer
+  is configured.
+- ORCID login through `httpx_oauth` OpenID clients listed in `COCAT_OAUTH_PROVIDERS`, in the
+  web UI and through the stock fastapi-users OAuth router. An identity is linked by address
+  only for providers flagged `verifies_email` and only onto a verified local account.
+- Providers that hide the address (ORCID) get a placeholder `@placeholder.cocat.org`
+  account plus a `/ui/confirm-email` page where the owner supplies a real one. `OAuthAccount`
+  and migration `0004` store the identities.
+
 ## 0.13.0
 
 - Serve a web UI at `/ui/` from `cocat serve`, in the same process as the API and with
