@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from conftest import (
     AppClient,
+    MailClient,
     assert_websocket_refused,
     login,
     make_user,
@@ -16,7 +17,7 @@ from cocat.app.app import CocatApp
 from cocat.app.storage import room_file
 
 
-def create_room(app: AppClient, name: str = "Lab") -> dict:
+def create_room(app: AppClient | MailClient, name: str = "Lab") -> dict:
     response = app.client.post("/api/rooms", json={"name": name})
     assert response.status_code == 201
     return response.json()
@@ -362,3 +363,33 @@ def test_delete_room_disconnects_every_member(app_client):
             with pytest.raises(WebSocketDisconnect) as excinfo:
                 socket.receive_bytes()
             assert excinfo.value.code == 1008
+
+
+def test_an_invitation_email_is_sent(app_client_mail: MailClient) -> None:
+    make_user(app_client_mail.db_path, "owner@example.org")
+    login(app_client_mail.client, "owner@example.org")
+    room = create_room(app_client_mail)
+
+    response = app_client_mail.client.post(
+        f"/api/rooms/{room['id']}/invitations", json={"email": "guest@example.org"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["token"] == ""
+    [(_to, _subject, body)] = app_client_mail.mail.mails_to("guest@example.org")
+    assert "/ui/invitation#" in body
+
+
+def test_an_invitation_returns_its_token_without_a_mailer(
+    app_client: AppClient,
+) -> None:
+    make_user(app_client.db_path, "owner@example.org")
+    login(app_client.client, "owner@example.org")
+    room = create_room(app_client)
+
+    response = app_client.client.post(
+        f"/api/rooms/{room['id']}/invitations", json={"email": "guest@example.org"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["token"]

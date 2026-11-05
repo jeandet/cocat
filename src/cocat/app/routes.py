@@ -15,6 +15,7 @@ from .invitations import (
     preview_invitation,
     revoke_invitation,
 )
+from .mail import Mailer
 from .rooms import (
     Conflict,
     Forbidden,
@@ -64,9 +65,10 @@ def make_api_router(
     backend: Backend,
     connections: Connections,
     update_dir: str,
+    mail: Mailer | None = None,
 ) -> APIRouter:
     router = APIRouter()
-    actions = RoomActions(connections, update_dir)
+    actions = RoomActions(connections, update_dir, mail)
     current_user = Depends(backend.current_active_user)
     session_dependency = Depends(db.get_async_session)
 
@@ -161,20 +163,25 @@ def make_api_router(
         status_code=status.HTTP_201_CREATED,
     )
     async def post_invitation(
+        request: Request,
         room_id: str,
         body: InvitationCreate,
         user: User = current_user,
         session: AsyncSession = session_dependency,
     ) -> InvitationCreated:
-        invitation, token = await create_invitation(
-            session,
-            room_id,
-            user,
-            Role(body.role),
-            email=body.email,
-            expires_in=timedelta(days=body.expires_in_days),
-            max_uses=body.max_uses,
-        )
+        if body.email is None:
+            invitation, token = await create_invitation(
+                session,
+                room_id,
+                user,
+                Role(body.role),
+                expires_in=timedelta(days=body.expires_in_days),
+                max_uses=body.max_uses,
+            )
+        else:
+            invitation, token = await actions.invite(
+                session, room_id, user, Role(body.role), body.email, request
+            )
         return InvitationCreated(id=invitation.id, token=token)
 
     @router.get("/rooms/{room_id}/invitations", response_model=list[InvitationOut])

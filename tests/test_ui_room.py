@@ -8,8 +8,10 @@ from utils import (
     click,
     connect,
     ensure_user,
+    fill,
     in_session,
     rooms_of,
+    set_active,
     should_notify,
     user_by_email,
     user_id,
@@ -236,3 +238,57 @@ async def test_leave_the_room(ui: UI) -> None:
 def anyio_backend() -> str:
     """aiosqlite only runs on asyncio, so these tests cannot use trio."""
     return "asyncio"
+
+
+async def test_the_owner_sees_the_invite_row(ui: UI) -> None:
+    await open_room(ui, await personal_room(ui))
+
+    await ui.user.should_see(marker="invite-send", retries=30)
+
+
+async def test_an_editor_does_not_see_the_invite_row(ui: UI) -> None:
+    owner_email = f"owner-{uuid4().hex}@foo.com"
+    room_id = await shared_room(ui.db_path, owner_email, ui.email)
+    await open_room(ui, room_id)
+    await ui.user.should_see(marker="leave-room", retries=30)
+
+    await ui.user.should_not_see(marker="invite-send")
+
+
+async def test_inviting_by_email_sends_a_mail(ui_mail: UI) -> None:
+    await open_room(ui_mail, await personal_room(ui_mail))
+    await ui_mail.user.should_see(marker="invite-send", retries=30)
+
+    fill(ui_mail.user, "invite-email", "guest@example.org")
+    click(ui_mail.user, "invite-send")
+
+    await should_notify(ui_mail.user, "Invitation sent to guest@example.org")
+    assert ui_mail.mail is not None
+    [(_to, _subject, body)] = ui_mail.mail.mails_to("guest@example.org")
+    assert "/ui/invitation#" in body
+    assert value_of(ui_mail, "share-link") == ""
+
+
+async def test_inviting_by_email_without_a_mailer_shows_the_link(ui: UI) -> None:
+    await open_room(ui, await personal_room(ui))
+    await ui.user.should_see(marker="invite-send", retries=30)
+
+    fill(ui.user, "invite-email", "guest@example.org")
+    click(ui.user, "invite-send")
+
+    await should_notify(ui.user, "Invitation created")
+    assert value_of(ui, "share-link").startswith("https://testserver/ui/invitation#")
+
+
+async def test_inviting_after_losing_the_session_is_refused(ui_mail: UI) -> None:
+    room_id = await personal_room(ui_mail)
+    await open_room(ui_mail, room_id)
+    await ui_mail.user.should_see(marker="invite-send", retries=30)
+    await set_active(ui_mail.db_path, ui_mail.email, False)
+
+    fill(ui_mail.user, "invite-email", "guest@example.org")
+    click(ui_mail.user, "invite-send")
+
+    await should_notify(ui_mail.user, "Please sign in again")
+    assert ui_mail.mail is not None
+    assert ui_mail.mail.sent == []

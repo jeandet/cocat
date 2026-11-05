@@ -2,7 +2,7 @@ from uuid import UUID
 
 from fastapi import Request
 from fastapi.responses import RedirectResponse
-from nicegui import ui
+from nicegui import context, ui
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..app.db import Invitation, Role, Room, User
@@ -156,6 +156,29 @@ def register(ctx: UIContext) -> None:
                             ),
                         ).mark(f"transfer-{member.id}")
 
+        async def send_invite(address: str) -> None:
+            nonlocal link
+            invited = await perform(
+                ctx,
+                lambda session, actor: ctx.actions.invite(
+                    session,
+                    room_id,
+                    actor,
+                    Role.editor,
+                    address,
+                    context.client.request,
+                ),
+            )
+            if invited is None:
+                return
+            _invitation, token = invited
+            if token:
+                link = absolute_url(request, f"/invitation#{token}")
+                ui.notify("Invitation created")
+            else:
+                ui.notify(f"Invitation sent to {address}")
+            await invitations.refresh()
+
         @ui.refreshable
         async def invitations() -> None:
             async with ctx.db.async_session_maker() as session:
@@ -172,6 +195,12 @@ def register(ctx: UIContext) -> None:
                     "create-invitation"
                 )
                 ui.button("Copy", on_click=copy_link).mark("copy-link")
+            with ui.row().classes("items-center gap-2"):
+                address = ui.input("Invite by email").mark("invite-email")
+                ui.button(
+                    "Send invitation",
+                    on_click=lambda: send_invite(address.value or ""),
+                ).mark("invite-send")
             for invitation in rows:
                 with ui.row().classes("items-center gap-2"):
                     ui.label(invitation.email or "Share link").mark(

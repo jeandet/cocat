@@ -155,7 +155,8 @@ class CocatApp:  # pragma: nocover
         )
         app.add_exception_handler(RoomError, room_error_handler)
         app.include_router(
-            make_api_router(db, backend, self.connections, update_dir), prefix="/api"
+            make_api_router(db, backend, self.connections, update_dir, mail),
+            prefix="/api",
         )
 
         @app.websocket("/room/{room_id}")
@@ -203,7 +204,7 @@ class CocatApp:  # pragma: nocover
             UIContext(
                 db=db,
                 backend=backend,
-                actions=RoomActions(self.connections, update_dir),
+                actions=RoomActions(self.connections, update_dir, mail),
                 check_limit=check_limit,
             ),
         )
