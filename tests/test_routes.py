@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import anyio
 import pytest
 from conftest import (
     AppClient,
@@ -10,10 +11,22 @@ from conftest import (
     ws_headers,
 )
 from fastapi.testclient import TestClient
+from pycrdt import (
+    Doc,
+    Map,
+    YMessageType,
+    YSyncMessageType,
+    create_sync_message,
+    create_update_message,
+    handle_sync_message,
+)
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
-from utils import RecordingMail, clean_nicegui
+from utils import RecordingMail, clean_nicegui, in_session, user_by_email
 
 from cocat.app.app import CocatApp
+from cocat.app.db import Role
+from cocat.app.rooms import add_member
 from cocat.app.storage import room_file
 
 
@@ -412,3 +425,100 @@ def test_a_mailer_needs_a_public_url(
     with clean_nicegui():
         with pytest.raises(ValueError, match="COCAT_PUBLIC_URL"):
             CocatApp(update_dir, db_path, mail=RecordingMail())
+
+
+def document_update() -> bytes:
+    document: Doc = Doc()
+    content: Map = document.get("content", type=Map)
+    content["key"] = "value"
+    return create_update_message(document.get_update())
+
+
+def content_after_sync_request(websocket) -> dict:
+    websocket.send_bytes(create_sync_message(Doc()))
+    while True:
+        frame = websocket.receive_bytes()
+        if frame[0] != YMessageType.SYNC or frame[1] != YSyncMessageType.SYNC_STEP2:
+            continue
+        document: Doc = Doc()
+        content: Map = document.get("content", type=Map)
+        handle_sync_message(frame[1:], document)
+        return {"key": content["key"]} if "key" in content else {}
+
+
+def add_member_with(app: AppClient, room_id: str, email: str, role: Role) -> None:
+    make_user(app.db_path, email)
+
+    async def add(session: AsyncSession) -> None:
+        member = await user_by_email(session, email)
+        await add_member(session, room_id, member.id, role)
+
+    anyio.run(in_session, app.db_path, add)
+
+
+def test_a_viewer_cannot_write_to_the_room(app_client: AppClient) -> None:
+    make_user(app_client.db_path, "owner@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    add_member_with(app_client, room["id"], "viewer@x.org", Role.viewer)
+
+    login(app_client.client, "viewer@x.org")
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as websocket:
+        websocket.receive_bytes()
+
+        websocket.send_bytes(document_update())
+
+        assert content_after_sync_request(websocket) == {}
+
+
+def test_an_editor_can_write_to_the_room(app_client: AppClient) -> None:
+    make_user(app_client.db_path, "owner@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    add_member_with(app_client, room["id"], "editor@x.org", Role.editor)
+
+    login(app_client.client, "editor@x.org")
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as websocket:
+        websocket.receive_bytes()
+
+        websocket.send_bytes(document_update())
+
+        assert content_after_sync_request(websocket) == {"key": "value"}
+
+
+def content_of(frame: bytes) -> dict:
+    assert frame[0] == YMessageType.SYNC
+    assert frame[1] == YSyncMessageType.SYNC_UPDATE
+    document: Doc = Doc()
+    content: Map = document.get("content", type=Map)
+    handle_sync_message(frame[1:], document)
+    return {"key": content["key"]} if "key" in content else {}
+
+
+def test_a_viewer_still_receives_an_update_from_the_owner(
+    app_client: AppClient,
+) -> None:
+    make_user(app_client.db_path, "owner@x.org")
+    login(app_client.client, "owner@x.org")
+    room = create_room(app_client)
+    add_member_with(app_client, room["id"], "viewer@x.org", Role.viewer)
+    owner_headers = ws_headers(app_client.client)
+
+    login(app_client.client, "viewer@x.org")
+    with app_client.client.websocket_connect(
+        f"/room/{room['id']}", headers=ws_headers(app_client.client)
+    ) as viewer:
+        viewer.receive_bytes()
+
+        with app_client.client.websocket_connect(
+            f"/room/{room['id']}", headers=owner_headers
+        ) as owner:
+            owner.receive_bytes()
+
+            owner.send_bytes(document_update())
+
+            assert content_of(viewer.receive_bytes()) == {"key": "value"}

@@ -14,7 +14,7 @@ from fastapi_users.db import BaseUserDatabase, SQLAlchemyUserDatabase
 from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .db import DB, OAuthAccount, User
+from .db import DB, OAuthAccount, Role, User
 from .mail import Mailer, MailError, is_placeholder, reset_mail, verification_mail
 from .rooms import create_personal_room, get_role
 
@@ -196,7 +196,7 @@ def get_backend(db: DB, secret: str, mail: Mailer | None = None) -> Backend:
         websocket: WebSocket,
         room_id: str = Path(...),
         fastapiusersauth: Annotated[str | None, Cookie()] = None,
-    ) -> tuple[WebSocket, User] | None:
+    ) -> tuple[WebSocket, User, Role] | None:
         async with db.async_session_maker() as session:
             user = await user_from_token(
                 session,
@@ -206,11 +206,11 @@ def get_backend(db: DB, secret: str, mail: Mailer | None = None) -> Backend:
                 ),
                 get_jwt_strategy(),
             )
-            if (
-                user is not None
-                and await get_role(session, room_id, user.id) is not None
-            ):
-                return websocket, user
+            role = (
+                await get_role(session, room_id, user.id) if user is not None else None
+            )
+            if user is not None and role is not None:
+                return websocket, user, role
 
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return None

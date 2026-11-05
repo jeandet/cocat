@@ -24,7 +24,7 @@ from ..ui import mount_ui
 from ..ui.context import UIContext
 from .actions import RoomActions
 from .connections import Connections
-from .db import DB, User, get_db
+from .db import DB, Role, User, get_db
 from .db import Room as RoomModel
 from .mail import Mailer
 from .oauth import (
@@ -41,6 +41,7 @@ from .schemas import RoomUsers, UserCreate, UserRead, UserRooms, UserUpdate
 from .secret import load_secret
 from .storage import remove_room_file, room_file
 from .users import get_backend
+from .yjs import ReadOnlyChannel
 
 
 def with_route_dependency(
@@ -194,20 +195,23 @@ class CocatApp:  # pragma: nocover
         @app.websocket("/room/{room_id}")
         async def connect_room(
             room_id: str,
-            authenticated: tuple[WebSocket, User] | None = Depends(
+            authenticated: tuple[WebSocket, User, Role] | None = Depends(
                 backend.websocket_auth
             ),
         ):
             if authenticated is None:
                 return
 
-            websocket, user = authenticated
+            websocket, user, role = authenticated
             await websocket.accept()
             self.connections.add(room_id, user.id, websocket)
             try:
                 ywebsocket = YWebSocket(websocket, room_id)
                 room = await self.room_manager.get_room(ywebsocket.id)
-                await room.serve(ywebsocket)
+                channel: AsyncChannel = (
+                    ReadOnlyChannel(ywebsocket) if role is Role.viewer else ywebsocket
+                )
+                await room.serve(channel)
             finally:
                 self.connections.discard(room_id, user.id, websocket)
 
